@@ -71,14 +71,32 @@ export interface ObservingLoop {
     start(): void;
     stop(): void;
     pulse(timestamp: number, options?: { render?: boolean; input?: boolean }): void;
-    frame(timestamp: number): void;
-    render(): void;
+    /** rAF 한 번분. timestamp는 RAF timestamp입니다. 그렸으면 true, 프레임 제한이 건너뛰었거나 진행이 실패했으면 false. */
+    frame(timestamp: number): boolean;
+    /** timestamp를 주면 그 시각이, 없으면 직전 프레임 시각이 render의 frameTimeMs가 됩니다. */
+    render(timestamp?: number): void;
     observeInput(timestamp: number): unknown;
     flushInput(timestamp: number): unknown;
     pollInput(timestamp: number): unknown;
     releaseInput(): void;
     resetTiming(): void;
     readonly running: boolean;
+    /** 현재 완료된 틱 경계의 예정 시각. 초기화 전에는 null. */
+    readonly simulationTimeMs: number | null;
+    readonly nextDeadlineMs: number | null;
+    readonly rates: ReturnType<typeof clockRates> | null;
+}
+/** 화면 프레임 제한 판정. RAF를 소유하지 않습니다. */
+export class FramePacer {
+    constructor(options: { minHz: number });
+    /** RAF timestamp를 받아 이 프레임을 그릴지 답합니다(true면 그린 것으로 기록). */
+    accept(timestampMs: number): boolean;
+    /** RAF를 멈췄다 다시 시작할 때 부릅니다. 멈춘 동안의 간격을 표본에 넣지 않습니다. */
+    rebase(): void;
+    /** 추정한 화면 주사 간격(ms). 표본 15개가 차기 전에는 0. */
+    readonly refreshMs: number;
+    /** 화면 주사 몇 번마다 그리는지. */
+    readonly stride: number;
 }
 export class LocalInputPreview {
     constructor(options: LocalInputPreviewOptions);
@@ -139,6 +157,10 @@ export class LocalInputPreview {
 }
 export function createLoop<S extends LoopSession>(options: {
     session: S & { queueCommand?: (payload: Bytes) => number };
+    /** 주면 clockRates로 검사합니다(tickRate는 session에서). */
+    rates?: { baseHz: number; inputHz: number };
+    /** 프레임 제한. 화면 주사의 정수 배 가운데 minHz 이상인 가장 낮은 빈도로 그립니다. 없으면 RAF마다 그립니다. */
+    frame?: { minHz: number };
     backlogPolicy?: 'drop' | 'retain' | 'defer';
     maxBacklogTicks?: number;
     onBacklogDrop?: (event: {
@@ -153,11 +175,17 @@ export function createLoop<S extends LoopSession>(options: {
     beforeFrame?: (timestamp: number) => void;
     canAdvance?: () => boolean;
     canObserveInput?: () => boolean;
-    onAdvance?: (result: ReturnType<S['advance']>, submission?: LoopInputSubmission) => void;
+    /** tickTimeMs: 방금 끝난 틱의 예정 시각. 표시 capture의 nowMs로 그대로 넘깁니다. */
+    onAdvance?: (
+        result: ReturnType<S['advance']>,
+        submission: LoopInputSubmission | undefined,
+        tickTimeMs: number,
+    ) => void;
     onPreviewError?: (error: unknown) => void;
     inputPreview?: Pick<LocalInputPreview, 'observe' | 'commit' | 'clear' | 'enabled'> &
         Partial<Pick<LocalInputPreview, 'clockGap'>>;
-    render?: (context: { session: S; alpha: number; resimulating: boolean }) => void;
+    /** frameTimeMs: 이 그리기의 화면 프레임 시각. 표시 frame(nowMs)에 그대로 넘깁니다. loop.render()를 프레임 없이 먼저 부르면 null. */
+    render?: (context: { session: S; alpha: number; resimulating: boolean; frameTimeMs: number | null }) => void;
     onError?: (error: unknown) => void;
     onInputRelease?: () => void;
     requestFrame?: (callback: FrameRequestCallback) => number;
@@ -180,12 +208,10 @@ export function createDeadlineScheduler(options: {
     readonly deadlineMs: number | null;
 };
 
-export function clockRates(options: { baseHz: number; tickRate: number; inputHz: number; renderHz: number }): Readonly<{
+export function clockRates(options: { baseHz: number; tickRate: number; inputHz: number }): Readonly<{
     baseHz: number;
     tickRate: number;
     inputHz: number;
-    renderHz: number;
     simulationDivisor: number;
     inputDivisor: number;
-    renderDivisor: number;
 }>;

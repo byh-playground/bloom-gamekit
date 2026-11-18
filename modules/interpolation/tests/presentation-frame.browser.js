@@ -108,6 +108,153 @@ export async function runFrameChecks(page) {
             JITTER_BEFORE === 70 && JITTER.frame(200).sample('b', 0).x === 70,
             'the following 70ms arrival retargets without a visible jump',
         );
+        // 표시 시계: capture에는 틱 예정 시각, frame에는 화면 프레임 시각(RAF timestamp)을 그대로 넘깁니다.
+        // 프레임 콜백은 프레임 시각보다 3ms 늦게 돌아, 그 사이에 예정된 틱의 capture가 프레임 시각보다 뒤입니다.
+        const CLOCKED = new PRESENTATION_RUNTIME({ stepMs: 50, delayMs: 50, clock: 'bounded' }),
+            CLOCK_PACKET = (tick, revision = 0, mode = 'continuous') => ({
+                revision,
+                sequence: tick,
+                timeMs: tick * 50,
+                mode,
+                entities: [SHOT(tick * 50)],
+            }),
+            CLOCK_STEPS = [];
+        CLOCKED.capture(CLOCK_PACKET(0, 0, 'reset'), 500);
+        let clockTick = 0,
+            clockShown = 0;
+        for (let frameAt = 516; frameAt <= 1000; frameAt += 16) {
+            while (500 + 50 * (clockTick + 1) <= frameAt + 3) {
+                clockTick++;
+                CLOCKED.capture(CLOCK_PACKET(clockTick), 500 + 50 * clockTick);
+            }
+            const SHOWN = CLOCKED.frame(frameAt).timeMs;
+            if (frameAt > 564) {
+                CLOCK_STEPS.push(SHOWN - clockShown);
+            }
+            clockShown = SHOWN;
+        }
+        CHECK(
+            CLOCK_STEPS.length === 27 && CLOCK_STEPS.every((step) => step === 16) && clockShown === 446,
+            'display time advances by exactly the frame interval while tick-due captures are newer than the frame timestamp: ' +
+                JSON.stringify(CLOCK_STEPS),
+        );
+        // 롤백 뒤 프레임 없이 두 틱을 잇달아 받아도, 다음 표본을 그 틱의 예정 시각에 붙여 표시가 멈추지 않습니다.
+        CLOCKED.capture(CLOCK_PACKET(11, 1, 'rollback'), 1050);
+        CLOCKED.capture(CLOCK_PACKET(12, 1), 1100);
+        CHECK(
+            CLOCKED.frame(1100).timeMs === 550 &&
+                CLOCKED.frame(1116).timeMs === 566 &&
+                CLOCKED.frame(1132).timeMs === 582 &&
+                CLOCKED.frame(1100).timeMs === 582 &&
+                CLOCKED.frame(1132).nowMs === 1132,
+            'consecutive captures after a rollback attach to the tick due time, and a past frame time reads the current display clock',
+        );
+        const CLOCKED_SCALAR = new INTERPOLATION_TIMELINE({
+            schema: { x: 'number' },
+            stepMs: 50,
+            delayMs: 50,
+            clock: 'bounded',
+        });
+        CLOCKED_SCALAR.accept({ revision: 0, sequence: 0, timeMs: 0, mode: 'reset', entities: [] }, 500);
+        CLOCKED_SCALAR.accept({ revision: 0, sequence: 1, timeMs: 50, entities: [] }, 550);
+        // 세 번째 표본은 마지막 프레임(550) 뒤에 나옵니다. 그때 표시는 아직 흐르는 중이라 표시 시계에 넣고,
+        // 표시는 프레임 시각만큼 그대로 이어집니다.
+        CLOCKED_SCALAR.accept({ revision: 0, sequence: 2, timeMs: 100, entities: [] }, 602);
+        CHECK(
+            CLOCKED_SCALAR.displayTime(564) === 14 &&
+                CLOCKED_SCALAR.displayTime(600) === 50 &&
+                CLOCKED_SCALAR.displayTime(616) === 66,
+            'the scalar timeline owns the same display clock',
+        );
+        // 한 시각에서 읽은 표시 시각·자세·개체의 존재는 같은 시점의 것입니다(표본이 프레임 시각보다 뒤에 나와도).
+        const CONSISTENT = new PRESENTATION_RUNTIME({ stepMs: 50, delayMs: 50, clock: 'bounded' }),
+            CONSISTENT_PUT = (sequence, nowMs, entities) =>
+                CONSISTENT.capture(
+                    { revision: 0, sequence, timeMs: sequence * 50, mode: sequence ? 'continuous' : 'reset', entities },
+                    nowMs,
+                );
+        CONSISTENT_PUT(0, 0, [SHOT(0)]);
+        CONSISTENT_PUT(1, 50, []);
+        CONSISTENT_PUT(2, 100, []);
+        const BEFORE_REMOVAL = CONSISTENT.frame(90),
+            BEFORE_REMOVAL_TIME = BEFORE_REMOVAL.timeMs,
+            BEFORE_REMOVAL_SHOWN = BEFORE_REMOVAL.sample('b', 0) !== null,
+            AFTER_REMOVAL = CONSISTENT.frame(101);
+        CHECK(
+            BEFORE_REMOVAL_TIME === 40 &&
+                BEFORE_REMOVAL_SHOWN &&
+                AFTER_REMOVAL.timeMs === 51 &&
+                AFTER_REMOVAL.sample('b', 0) === null,
+            'an entity removed at simulation time 50 stays until the display time reaches 50, although later samples were captured first',
+        );
+        // 묶음 수신: 다섯 표본을 같은 시각에 받아도 표시 시각과 자세가 어긋나지 않고, 같은 시각을 다시 읽으면 값이 같습니다.
+        const BUNDLE = new INTERPOLATION_TIMELINE({
+                schema: { x: 'number' },
+                stepMs: 50,
+                delayMs: 50,
+                clock: 'bounded',
+            }),
+            BUNDLE_PUT = (sequence, nowMs) =>
+                BUNDLE.accept(
+                    {
+                        revision: 0,
+                        sequence,
+                        timeMs: sequence * 50,
+                        mode: sequence ? 'continuous' : 'reset',
+                        entities: [{ id: 'u', generation: 0, values: { x: sequence * 50 } }],
+                    },
+                    nowMs,
+                ),
+            BUNDLE_OUT = {},
+            BUNDLE_AT = (nowMs) => {
+                const TIME = BUNDLE.displayTime(nowMs);
+                return BUNDLE.sampleInto('u', 0, nowMs, BUNDLE_OUT) && BUNDLE_OUT.x === TIME ? TIME : NaN;
+            };
+        BUNDLE_PUT(0, 0);
+        const BUNDLE_START = BUNDLE_AT(0);
+        for (let i = 1; i <= 5; i++) {
+            BUNDLE_PUT(i, 100);
+        }
+        const BUNDLE_SHOWN = BUNDLE_AT(90);
+        CHECK(
+            BUNDLE_START === 0 && BUNDLE_SHOWN === 150 && BUNDLE_AT(90) === 150 && BUNDLE_AT(120) === 170,
+            'a burst keeps display time and pose at one point, drops only display debt beyond the buffer, and never moves backward: ' +
+                BUNDLE_SHOWN,
+        );
+        // finish는 같은 시각의 표시를 바꾸지 않고, 남은 구간과 꼬리를 그대로 진행합니다.
+        CHECK(
+            BUNDLE.finish({ tailMs: 50 }, 120) && BUNDLE_AT(120) === 170 && BUNDLE.displayTime(1000) === 300,
+            'finish keeps the displayed time at the same clock and then plays the remaining interval and tail',
+        );
+        // 프레임 없이 표본만 40개 이어져도(숨은 탭) 표시 시각은 뒤로 가지 않고 자세와 같은 시점입니다.
+        const HIDDEN = new INTERPOLATION_TIMELINE({
+                schema: { x: 'number' },
+                stepMs: 50,
+                delayMs: 50,
+                clock: 'bounded',
+            }),
+            HIDDEN_OUT = {};
+        for (let i = 0; i <= 40; i++) {
+            HIDDEN.accept(
+                {
+                    revision: 0,
+                    sequence: i,
+                    timeMs: i * 50,
+                    mode: i ? 'continuous' : 'reset',
+                    entities: [{ id: 'u', generation: 0, values: { x: i * 50 } }],
+                },
+                i * 50,
+            );
+            if (i === 0) {
+                CHECK(HIDDEN.displayTime(0) === 0, 'the first reset sample is displayed at its own time');
+            }
+        }
+        CHECK(
+            HIDDEN.displayTime(0) === 1900 && HIDDEN.sampleInto('u', 0, 0, HIDDEN_OUT) && HIDDEN_OUT.x === 1900,
+            'samples without frames keep only the latest buffered window and never move the display backward',
+        );
+        // 과거 시각은 크기와 상관없이 지금 표시 시계로 읽습니다.
+        CHECK(HIDDEN.displayTime(-20000) === 1900, 'a far past time reads the current display clock');
         const FIXED_COMPARISON = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200 }),
             LATEST_COMPARISON = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' });
         for (let i = 0; i <= 10; i++) {
@@ -119,6 +266,8 @@ export async function runFrameChecks(page) {
                 entities: [SHOT(i * 100)],
             };
             FIXED_COMPARISON.capture(PACKET, i * 100);
+            // 표시 시계는 프레임이 흘립니다: 표본을 받기 전에 그 시각의 프레임을 읽습니다.
+            LATEST_COMPARISON.frame(i * 100);
             LATEST_COMPARISON.capture(PACKET, i * 100);
         }
         const FIXED_FRAME = FIXED_COMPARISON.frame(1100),
@@ -137,8 +286,11 @@ export async function runFrameChecks(page) {
         // A visible game may be backgrounded or receive simulation ticks more slowly than wall time.
         // Its body, path and event clock must agree while the clock waits for the next sample.
         const BOUNDED = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' });
-        const BOUNDED_PUT = (sequence, timeMs, nowMs, entities, extra = {}) =>
-            BOUNDED.capture({ revision: 0, sequence, timeMs, entities, ...extra }, nowMs);
+        const BOUNDED_PUT = (sequence, timeMs, nowMs, entities, extra = {}) => {
+            // 표시 시계는 프레임이 흘립니다: 표본을 받기 전에 그 시각의 프레임을 읽습니다.
+            BOUNDED.frame(nowMs);
+            return BOUNDED.capture({ revision: 0, sequence, timeMs, entities, ...extra }, nowMs);
+        };
         BOUNDED_PUT(0, 0, 0, [SHOT(0)]);
         BOUNDED_PUT(1, 100, 100, [SHOT(100)]);
         BOUNDED_PUT(2, 200, 1200, [SHOT(200)]);
@@ -170,6 +322,8 @@ export async function runFrameChecks(page) {
         );
         const BURST = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' });
         BURST.capture({ revision: 0, sequence: 0, timeMs: 0, entities: [SHOT(0)] }, 0);
+        // 표시 시계는 프레임이 흘립니다: 표본을 받기 전에 그 시각의 프레임을 읽습니다.
+        BURST.frame(200);
         for (let i = 1; i <= 12; i++) {
             BURST.capture({ revision: 0, sequence: i, timeMs: i * 100, entities: [SHOT(i * 100)] }, 200);
         }
@@ -185,6 +339,8 @@ export async function runFrameChecks(page) {
             PAUSE_SHOT = (generation = 0) => ({ id: 'p', generation, type: Shot, source: PAUSE_SOURCE });
         for (let i = 0; i <= 2; i++) {
             PAUSE_SOURCE.x = i * 100;
+            // 표시 시계는 프레임이 흘립니다: 표본을 받기 전에 그 시각의 프레임을 읽습니다.
+            PAUSED.frame(i * 100);
             PAUSED.capture({ revision: 0, sequence: i, timeMs: i * 100, entities: [PAUSE_SHOT()] }, i * 100);
         }
         const BEFORE_PAUSE = PAUSED.frame(300),
@@ -198,6 +354,7 @@ export async function runFrameChecks(page) {
         const NEW_PAUSE_SOURCE = { x: 300, y: 0, color: 'red' };
         for (let i = 3; i <= 10; i++) {
             NEW_PAUSE_SOURCE.x = i * 100;
+            PAUSED.frame(i * 100);
             PAUSED.capture(
                 {
                     revision: 0,
@@ -346,6 +503,10 @@ export async function runFrameChecks(page) {
             }),
             SCALAR_OUT = {};
         for (let i = 0; i <= 2; i++) {
+            // 표시 시계는 프레임이 흘립니다: 표본을 받기 전에 그 시각을 읽습니다.
+            if (i) {
+                BOUNDED_SCALARS.displayTime(i * 100);
+            }
             BOUNDED_SCALARS.accept(
                 {
                     revision: 0,
@@ -358,6 +519,7 @@ export async function runFrameChecks(page) {
         }
         BOUNDED_SCALARS.setRate(0, 300);
         for (let i = 3; i <= 10; i++) {
+            BOUNDED_SCALARS.displayTime(i * 100);
             BOUNDED_SCALARS.accept(
                 {
                     revision: 0,

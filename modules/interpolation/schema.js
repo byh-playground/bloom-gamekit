@@ -25,6 +25,13 @@ export function finite(value, label) {
     }
     return value;
 }
+/**
+ * 표시 시계는 되돌아가지 않습니다. 과거 시각은 크기와 상관없이 지금 표시 시계(current)로 읽습니다.
+ * 틱 예정 시각은 표시 시계보다 얼마든지 과거일 수 있어(밀린 틱을 오래된 것부터 처리) 거리로 시계 오용을 가리지 않습니다.
+ */
+export function displayClock(current, nowMs) {
+    return Math.max(current, finite(nowMs, 'nowMs'));
+}
 export function ordinal(value, label) {
     if (!Number.isSafeInteger(value) || value < 0) {
         throw new TypeError(`${label} must be a nonnegative safe integer`);

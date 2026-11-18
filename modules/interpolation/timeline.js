@@ -1,5 +1,5 @@
 import { bufferInterval, intervalAt, retainRemoved } from './intervals.js';
-import { compileSchema, finite, ordinal, readValues, readResetFields } from './schema.js';
+import { compileSchema, displayClock, finite, ordinal, readValues, readResetFields } from './schema.js';
 import { evaluate, fraction, retarget } from './tracks.js';
 import { BoundedPlayhead } from './playhead.js';
 
@@ -45,18 +45,17 @@ export class InterpolationTimeline {
     get size() {
         return this.#tracks.size;
     }
-    #checkClock(nowMs) {
-        finite(nowMs, 'nowMs');
-        if (nowMs < this.#now) {
-            throw new RangeError('presentation clock must not go backwards');
-        }
+    // 표시 시계는 이 객체가 소유하고 되돌아가지 않습니다. 과거 시각(직전 호출보다 오래된 RAF timestamp 등)은
+    // 지금 표시 시계로 읽습니다.
+    #clock(nowMs) {
+        return displayClock(this.#now, nowMs);
     }
     #displayTime(nowMs) {
         return this.#playhead ? this.#playhead.sample(nowMs) : nowMs - this.#delayMs - this.#origin;
     }
     /** Finish authority and advance the same display clock through a finite effects tail. */
     finish({ tailMs } = {}, nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (!this.#playhead) {
             throw new Error('terminal presentation requires a bounded clock');
         }
@@ -81,7 +80,7 @@ export class InterpolationTimeline {
     }
     /** Change the bounded display rate after accounting for the previous rate through nowMs. */
     setRate(rate, nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (!this.#playhead || finite(rate, 'rate') < 0) {
             throw new RangeError('setRate requires a bounded clock and nonnegative rate');
         }
@@ -95,7 +94,7 @@ export class InterpolationTimeline {
     }
     /** Simulation time used by every sample at the supplied monotonic clock time. */
     displayTime(nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (!this.#delayMs) {
             throw new Error('displayTime requires delayed presentation');
         }
@@ -104,7 +103,7 @@ export class InterpolationTimeline {
     }
     /** True only when an explicitly requested finite terminal tail has elapsed. */
     isTerminalComplete(nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (!this.#playhead) {
             throw new Error('terminal presentation requires a bounded clock');
         }
@@ -120,7 +119,8 @@ export class InterpolationTimeline {
      * @param {Snapshot} packet @param {number} nowMs @returns {boolean}
      */
     accept(packet, nowMs) {
-        this.#checkClock(nowMs);
+        // bounded 시계는 표본을 넣을 시각을 고릅니다(BoundedPlayhead.captureAt). 표시 시계를 밀지 않는 것이 기본입니다.
+        nowMs = this.#playhead ? this.#playhead.captureAt(this.#now, this.#clock(nowMs)) : this.#clock(nowMs);
         if (!packet || typeof packet !== 'object') {
             throw new TypeError('packet must be an object');
         }
@@ -245,7 +245,7 @@ export class InterpolationTimeline {
      * @param {Record<string,number|string|boolean|null>} out @returns {boolean}
      */
     sampleInto(id, generation, nowMs, out) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (!out || typeof out !== 'object') {
             throw new TypeError('out must be a writable object');
         }

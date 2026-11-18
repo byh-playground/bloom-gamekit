@@ -13,18 +13,22 @@
 // bloom-takraw/src/runtime.js (줄임)
 loop = createLoop({
     session,
-    rates: { baseHz, inputHz, renderHz },
+    rates: { baseHz, inputHz },
+    frame: { minHz: 60 }, // 프레임 제한: 60 fps 이상을 지키는 화면 주사의 정수 배로 그립니다
     getInput,
     canAdvance: () => Boolean(session?.ready && !session.failure && !paused),
-    onAdvance() {
-        publish();
+    onAdvance(result, submission, tickTimeMs) {
+        presentation.capture(packet(), tickTimeMs); // 게시: 그 틱의 예정 시각
         confirmEvents();
     },
     onInputRelease: clearDeviceState,
     onError: (error) => simulationFailed(error),
-    render: () => renderScene(performance.now()),
+    render: ({ frameTimeMs }) => renderScene(presentation.frame(frameTimeMs)), // 표시: 화면 프레임 시각
 });
+loop.start();
 ```
+
+게시 시각과 표시 시각은 루프가 넘겨 주는 값을 그대로 씁니다. `performance.now()`를 직접 읽어 넘기지 않습니다([프레임 제한과 표시 시각](#프레임-제한과-표시-시각)).
 
 ## 쓰지 말아야 할 때
 
@@ -40,11 +44,11 @@ loop = createLoop({
 
 공개 API: `createLoop`, 선택 기능 `LocalInputPreview`. 외부 import가 없는 `dist/simloop.js` 하나로 사용할 수 있습니다. 도구 설치나 다른 모듈 초기화는 필요하지 않습니다.
 
-`loop.start()`는 자동 rAF로 `observeInput → 틱 진행 → 그리기`를 합니다. rAF를 게임이 소유해야 하면(표시 상한·카메라 등) 같은 본문인 `loop.frame(timestamp)`를 rAF 콜백에서 부릅니다. 한 호출이 입력 관찰, 밀린 틱 진행, 그리기를 순서대로 하고 진행이 실패하면 그리지 않습니다.
+`loop.start()`는 자동 rAF로 `observeInput → 틱 진행 → 그리기`를 합니다. rAF를 게임이 소유해야 하면(세션이 없을 때도 그리는 화면 등) 같은 본문인 `loop.frame(timestamp)`를 rAF 콜백에서 부릅니다. timestamp는 rAF가 준 값을 그대로 넘깁니다. 한 호출이 프레임 제한 판정, 입력 관찰, 밀린 틱 진행, 그리기를 순서대로 하고, 그렸으면 `true`를 돌려줍니다(프레임 제한이 건너뛰었거나 진행이 실패하면 `false`). 표시 상한 때문에 rAF를 소유할 필요는 없습니다(`frame: { minHz }`).
 
 ```js
-function onFrame(now) {
-    loop.frame(now); // observeInput → pulse(render:false, input:false) → render를 직접 조합하지 않습니다
+function onFrame(timestamp) {
+    loop.frame(timestamp); // rAF timestamp 그대로. observeInput → pulse(render:false, input:false) → render를 직접 조합하지 않습니다
     requestAnimationFrame(onFrame);
 }
 requestAnimationFrame(onFrame);
@@ -62,6 +66,42 @@ pump.start();
 `loop.pulse(timestamp, {render:false})`와 `loop.render()`로 timer pump와 rAF 표현을 분리할 수도 있습니다(보조 타이머와 그리기만 하는 rAF가 필요할 때). 기존 `pulse(timestamp)`는 계속 render를 호출합니다. `loop.render()`는 poll/advance/input 제출을 실행하지 않습니다. [RoomSession 예제](../rollback/examples/availability/index.html)는 rAF에서 `loop.frame`을 부르고 단일 deadline scheduler를 보조로 둡니다. 숨김은 입력 해제이며, 큰 gap 뒤 timing을 초기화하고 RoomSession이 복귀 checkpoint를 처리합니다. 브라우저 freeze·OS suspend 중 실행을 보장하지 않습니다.
 
 기존 rollback-netcode의 동일 함수를 책임별로 이동했습니다. [공개 타입](./index.d.ts), [개발 계약](../rollback/CONTRACT.md), [상세 사용법과 이전](../rollback/docs/api-migration.md)을 따릅니다. 이 모듈은 게임 규칙·권위 상태를 정의하지 않습니다.
+
+## 프레임 제한과 표시 시각
+
+### 프레임 제한 (`frame: { minHz }` · `FramePacer`)
+
+`createLoop({ frame: { minHz: 60 } })`를 주면 자동 rAF(`loop.start()`)와 `loop.frame(timestamp)`가 같은 판정으로 프레임을 건너뜁니다. 옵션이 없으면 rAF마다 그립니다.
+
+- 그리는 빈도는 화면 주사 k번마다 한 번이고, k는 빈도가 `minHz` 이상으로 남는 가장 큰 정수입니다. 주사율 표기 오차(59.94 Hz 등)를 받아들이려고 비율에 5% 여유를 두므로 빈도는 `minHz`의 약 95%까지 내려갈 수 있습니다(`minHz: 60`일 때 114 Hz 이상 화면부터 k = 2, 예: 117 Hz → 58.5 fps). `minHz: 60`이면 60 Hz 화면 60, 90 → 90, 120 → 60, 144 → 72, 165 → 82.5 fps입니다. 주사 간격의 정수 배로만 그려야 프레임 간격이 고릅니다. 목표 간격에 맞춰 남는 시간을 쌓으면 간격이 번갈아 달라지고, 매번 간격을 다시 재면 90·144 Hz에서 45·48 fps로 떨어집니다.
+- 판정 규칙은 하나입니다: 직전에 그린 프레임에서 `min((k − 0.5) × 주사 간격, 0.95 × 1000/minHz)`만큼 지났으면 그립니다. 주사 간격은 최근 rAF 간격 15개의 중앙값입니다(탭 복귀·한두 프레임 지연은 추정을 움직이지 않습니다). 표본이 차기 전에는 프레임마다 그립니다. 뒤쪽 항은 추정이 길어진 뒤(느린 프레임이 이어진 뒤)에도 목표 간격이 지난 프레임을 버리지 않게 합니다. k는 비율이 경계를 0.05 넘을 때만 바뀌어 약 117 Hz처럼 경계에 걸린 화면에서 오가지 않습니다.
+- 판정에는 rAF timestamp를 씁니다. 콜백이 실제로 도는 시각(`performance.now()`)은 앞선 주 스레드 작업만큼 늦어져, 그 시각으로 판정하면 늦게 돈 프레임의 다음 프레임이 간격 미달로 버려집니다(발배구에서 rAF 600번 중 430번만 그렸습니다).
+- 건너뛴 프레임은 입력 관찰·틱 진행·그리기를 모두 하지 않습니다. 밀린 틱은 다음에 그리는 프레임(또는 보조 타이머)이 진행합니다.
+- 세션이 없을 때도 그리는 화면(메뉴 등)은 같은 판정기 `FramePacer`를 직접 씁니다. rAF를 소유하지 않는 판정기이고 프레임 경로에서 할당하지 않습니다. 이때 루프에는 `frame` 옵션을 주지 않습니다(판정은 한 곳에서만).
+
+```js
+const pacer = new FramePacer({ minHz: 60 });
+function onFrame(timestamp) {
+    handle = requestAnimationFrame(onFrame);
+    if (!pacer.accept(timestamp)) return; // true면 이 프레임을 그립니다
+    if (loop) loop.frame(timestamp);
+    else drawMenu(timestamp);
+}
+// rAF를 멈췄다 다시 시작할 때는 pacer.rebase()로 멈춘 동안의 간격을 표본에서 뺍니다.
+```
+
+### 게시 시각과 표시 시각
+
+루프는 두 시각을 넘겨 줍니다. 게임은 어느 시계를 쓸지 고르지 않고 그대로 넘깁니다.
+
+| 받는 곳                                     | 값                                                              | 넘길 곳                                   |
+| ------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------- |
+| `onAdvance(result, submission, tickTimeMs)` | 방금 끝난 틱의 예정 시각(`loop.simulationTimeMs`와 같은 값)     | 보간 `capture(packet, tickTimeMs)`        |
+| `render({ frameTimeMs })`                   | 이 그리기의 화면 프레임 시각(`loop.frame`이 받은 rAF timestamp) | 보간 `frame(frameTimeMs)`, 카메라·연출 dt |
+
+- 틱이 실제로 끝난 시각이나 콜백이 도는 시각을 표시에 쓰면 표시 시각 증가가 프레임마다 흔들립니다. 예정 시각과 프레임 시각은 고르게 늘어납니다.
+- 프레임 시각은 직전 틱 예정 시각이나 보조 타이머가 `performance.now()`로 진행한 시각보다 과거일 수 있습니다. [interpolation](../interpolation/README.md#표시-시계)이 표시 시계를 소유하므로 게임이 보정하지 않습니다(프레임 읽기가 표시 시계를 흘리고 capture는 표본만 넣습니다). `loop.frame`도 틱 진행에는 루프가 본 마지막 시각보다 뒤로 가지 않는 값을 써서 같은 시간을 두 번 세지 않습니다.
+- `loop.pulse(timestamp)`가 그릴 때의 `frameTimeMs`는 그 timestamp입니다. `loop.render(timestamp)`는 받은 시각을, 시각 없이 부르면 직전 프레임 시각을 넘깁니다(한 번도 없었으면 `null`).
 
 ## 소유권과 비용
 
@@ -143,9 +183,9 @@ protocol 3은 이벤트에서 명령별 불변 T를 예약합니다. 한 pump가
 
 ### 공통 기준 주파수와 루프 소유 마감
 
-`createLoop({rates:{baseHz:60,inputHz:60,renderHz:60},session,...})`는 session의 tickRate까지 기준 주파수의 정수 분주인지 검사합니다. 양의 정수 주파수만 허용하며 60/30/60/60은 가능하고 60/45/60/60은 RangeError입니다. `clockRates`를 별도로 호출할 수도 있습니다. 물리 디스플레이 주파수나 타이머 정확도를 요구하지 않습니다.
+`createLoop({rates:{baseHz:60,inputHz:60},session,...})`는 session의 tickRate까지 기준 주파수의 정수 분주인지 검사합니다. 양의 정수 주파수만 허용하며 baseHz/tickRate/inputHz가 60/30/60은 가능하고 60/45/60은 RangeError입니다. `clockRates`를 별도로 호출할 수도 있습니다. 물리 디스플레이 주파수나 타이머 정확도를 요구하지 않습니다. 표시 빈도는 화면 주사율로 정해지므로 rates에 두지 않고 `frame.minHz`로 정합니다. `renderHz` 같은 모르는 키는 TypeError입니다.
 
-보조 시뮬레이션 timer는 `createDeadlineScheduler({getDeadlineMs:()=>loop.nextDeadlineMs,pulse:now=>loop.pulse(now,{render:false,input:false})})`로 연결합니다. 루프만 실제 경과시간과 다음 tick을 계산하며 timer는 별도 주기를 누적하거나 backlog를 버리지 않습니다. 초기/타이밍 reset의 null deadline은 즉시 초기화 pulse로 처리합니다. 입력 이벤트는 계속 observeInput을 즉시 호출하고, RAF는 `loop.frame`으로 밀린 틱을 함께 진행합니다(타이머만 믿으면 터치 직후처럼 타이머가 늦어지는 때 멈춥니다). renderHz는 소비자의 표시 상한 설정입니다.
+보조 시뮬레이션 timer는 `createDeadlineScheduler({getDeadlineMs:()=>loop.nextDeadlineMs,pulse:now=>loop.pulse(now,{render:false,input:false})})`로 연결합니다. 루프만 실제 경과시간과 다음 tick을 계산하며 timer는 별도 주기를 누적하거나 backlog를 버리지 않습니다. 초기/타이밍 reset의 null deadline은 즉시 초기화 pulse로 처리합니다. 입력 이벤트는 계속 observeInput을 즉시 호출하고, RAF는 `loop.frame`으로 밀린 틱을 함께 진행합니다(타이머만 믿으면 터치 직후처럼 타이머가 늦어지는 때 멈춥니다).
 
 `backlogPolicy:'retain'`은 긴 지연에도 누적 시간을 보존하며 maxCatchupSteps씩 나누어 실제 catch-up합니다. 명시적인 pause/reset은 별도 lifecycle입니다. preview의 표시 구간은 fork가 전진한 전체 미래 tick 길이를 사용하여 held 입력의 한 틱/두 틱 예측이 같은 1틱 길이로 압축되지 않게 합니다.
 
