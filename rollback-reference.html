@@ -303,7 +303,7 @@
       return SIGNED(Math.trunc(SIGNED(a) * 1024 / b) || 0);
     }
   });
-  var VERSION = "0.64.0";
+  var VERSION = "0.65.0";
   var REPLAY_FORMAT_VERSION = "0.3.0-dev";
   var PROTOCOL_VERSION = 3;
   var CHUNK_SIZE = 16384;
@@ -9906,30 +9906,105 @@
   }
 
   // dist/simloop.js
-  function clockRates({ baseHz, tickRate, inputHz, renderHz } = {}) {
-    for (const [NAME, VALUE] of Object.entries({
-      baseHz,
-      tickRate,
-      inputHz,
-      renderHz
-    })) {
+  var RATE_NAMES = ["baseHz", "tickRate", "inputHz"];
+  var DERIVED_NAMES = ["simulationDivisor", "inputDivisor"];
+  function clockRates(rates = {}) {
+    for (const NAME of Object.keys(rates)) {
+      if (!RATE_NAMES.includes(NAME) && !DERIVED_NAMES.includes(NAME)) {
+        throw new TypeError(`unknown clock rate: ${NAME}`);
+      }
+    }
+    const BASE_HZ = rates.baseHz;
+    for (const NAME of RATE_NAMES) {
+      const VALUE = rates[NAME];
       if (!Number.isSafeInteger(VALUE) || VALUE <= 0) {
         throw new RangeError(`${NAME} must be a positive integer frequency`);
       }
-      if (NAME !== "baseHz" && baseHz % VALUE !== 0) {
-        throw new RangeError(`${NAME} (${VALUE}) must divide baseHz (${baseHz}) exactly`);
+      if (NAME !== "baseHz" && BASE_HZ % VALUE !== 0) {
+        throw new RangeError(`${NAME} (${VALUE}) must divide baseHz (${BASE_HZ}) exactly`);
       }
     }
     return Object.freeze({
-      baseHz,
-      tickRate,
-      inputHz,
-      renderHz,
-      simulationDivisor: baseHz / tickRate,
-      inputDivisor: baseHz / inputHz,
-      renderDivisor: baseHz / renderHz
+      baseHz: BASE_HZ,
+      tickRate: rates.tickRate,
+      inputHz: rates.inputHz,
+      simulationDivisor: BASE_HZ / rates.tickRate,
+      inputDivisor: BASE_HZ / rates.inputHz
     });
   }
+  var REFRESH_SAMPLES = 15;
+  var STRIDE_TOLERANCE = 0.05;
+  var STRIDE_MARGIN = 0.05;
+  var STRIDE_LEAD = 0.5;
+  var TARGET_LEAD = 0.95;
+  var FramePacer = class {
+    #targetMs;
+    #gaps = new Float64Array(REFRESH_SAMPLES);
+    #sorted = new Float64Array(REFRESH_SAMPLES);
+    #gapCount = 0;
+    #seenAt = null;
+    #drawnAt = -Infinity;
+    #refreshMs = 0;
+    #stride = 1;
+    /** @param {{minHz:number}} options 이 빈도 이상으로 그립니다(화면 주사율이 더 낮으면 주사율대로). */
+    constructor({ minHz } = {}) {
+      if (!Number.isFinite(minHz) || minHz <= 0) {
+        throw new RangeError("minHz must be a positive frequency");
+      }
+      this.#targetMs = 1e3 / minHz;
+    }
+    /** 추정한 화면 주사 간격(ms). 표본이 차기 전에는 0입니다. */
+    get refreshMs() {
+      return this.#refreshMs;
+    }
+    /** 화면 주사 몇 번마다 그리는지(k). */
+    get stride() {
+      return this.#stride;
+    }
+    /**
+     * 화면 프레임 하나를 받습니다. true면 이 프레임을 그리고(그린 것으로 기록), false면 건너뜁니다.
+     * RAF 콜백마다 한 번, 그 콜백의 timestamp로 부릅니다.
+     */
+    accept(timestampMs) {
+      if (!Number.isFinite(timestampMs)) {
+        throw new TypeError("frame timestamp");
+      }
+      this.#observe(timestampMs);
+      const DUE_MS = Math.min((this.#stride - STRIDE_LEAD) * this.#refreshMs, TARGET_LEAD * this.#targetMs);
+      if (timestampMs - this.#drawnAt < DUE_MS) {
+        return false;
+      }
+      this.#drawnAt = timestampMs;
+      return true;
+    }
+    /** RAF를 멈췄다 다시 시작할 때: 멈춘 동안의 간격을 표본에 넣지 않습니다. 추정과 k는 유지합니다. */
+    rebase() {
+      this.#seenAt = null;
+    }
+    // RAF 간격 하나를 표본에 넣고, 표본이 다 차 있으면 중앙값을 주사 간격으로 삼아 k를 맞춥니다.
+    #observe(timestampMs) {
+      const GAP = this.#seenAt === null ? 0 : timestampMs - this.#seenAt;
+      this.#seenAt = timestampMs;
+      if (GAP <= 0) {
+        return;
+      }
+      this.#gaps[this.#gapCount % REFRESH_SAMPLES] = GAP;
+      this.#gapCount++;
+      if (this.#gapCount < REFRESH_SAMPLES) {
+        return;
+      }
+      this.#sorted.set(this.#gaps);
+      this.#sorted.sort();
+      const DECIDED = this.#refreshMs > 0;
+      this.#refreshMs = this.#sorted[REFRESH_SAMPLES >> 1];
+      const RATIO = this.#targetMs / this.#refreshMs + STRIDE_TOLERANCE, MARGIN = DECIDED ? STRIDE_MARGIN : 0, UP = Math.floor(RATIO - MARGIN), DOWN = Math.floor(RATIO + MARGIN);
+      if (UP > this.#stride) {
+        this.#stride = UP;
+      } else if (DOWN < this.#stride) {
+        this.#stride = Math.max(1, DOWN);
+      }
+    }
+  };
   var NO_CAPTURES = Object.freeze([]);
   function createLoop({
     session,
@@ -9938,6 +10013,7 @@
     },
     inputPreview,
     rates,
+    frame,
     backlogPolicy = "drop",
     beforeFrame = () => {
     },
@@ -9988,6 +10064,7 @@
       ...rates,
       tickRate: session.profile.tickRate
     });
+    const PACER = frame === void 0 ? null : new FramePacer(frame);
     const QUANTUM = 1e3 / session.profile.tickRate;
     const MAX_BACKLOG_MS = QUANTUM * maxBacklogTicks;
     const REPORT_BACKLOG_DROP = (elapsedMs, droppedMs, timestamp, reason) => {
@@ -10008,6 +10085,7 @@
     let accumulator = 0;
     let generation = 0;
     let timingGeneration = 0;
+    let frameAt = null;
     if (inputPreview && typeof inputPreview.observe !== "function") {
       throw new TypeError("inputPreview observation capability");
     }
@@ -10122,15 +10200,25 @@
       }
       handle = void 0;
       inputPreview?.clear?.();
+      PACER?.rebase();
       globalThis.removeEventListener?.("blur", RELEASE);
       globalThis.document?.removeEventListener("visibilitychange", HIDDEN);
     };
-    const RENDER_FRAME = () => render2({
-      session,
-      alpha: Math.min(1, accumulator / QUANTUM),
-      resimulating: session.resimulating
-    });
-    const PULSE = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
+    const RENDER_FRAME = (timestamp) => {
+      if (timestamp !== void 0) {
+        if (!Number.isFinite(timestamp)) {
+          throw new TypeError("frame timestamp");
+        }
+        frameAt = timestamp;
+      }
+      render2({
+        session,
+        alpha: Math.min(1, accumulator / QUANTUM),
+        resimulating: session.resimulating,
+        frameTimeMs: frameAt
+      });
+    };
+    const PULSE = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}, frameTimestamp = timestamp) => {
       const CURRENT = generation;
       try {
         if (!Number.isFinite(timestamp)) {
@@ -10321,7 +10409,7 @@
           if (CURRENT !== generation) {
             return;
           }
-          onAdvance(RESULT, submission);
+          onAdvance(RESULT, submission, last - accumulator);
           if (CURRENT !== generation || TIMING !== timingGeneration) {
             return;
           }
@@ -10330,7 +10418,8 @@
           }
         }
         if (shouldRender) {
-          RENDER_FRAME();
+          RENDER_FRAME(frameTimestamp);
+          return true;
         }
       } catch (error) {
         if (CURRENT === generation) {
@@ -10340,10 +10429,14 @@
       }
     };
     const FRAME_STEP = (timestamp) => {
-      if (inputPreview || HAS_SUBMISSION) {
-        OBSERVE_INPUT(timestamp);
+      if (PACER && !PACER.accept(timestamp)) {
+        return false;
       }
-      PULSE(timestamp);
+      const TICK_AT = last !== void 0 && timestamp < last ? last : timestamp;
+      if (inputPreview || HAS_SUBMISSION) {
+        OBSERVE_INPUT(TICK_AT);
+      }
+      return PULSE(TICK_AT, void 0, timestamp) === true;
     };
     const START = () => {
       if (running) {
@@ -10386,7 +10479,9 @@
       },
       start: START,
       stop: STOP,
-      pulse: PULSE,
+      pulse(timestamp, options) {
+        PULSE(timestamp, options);
+      },
       frame: FRAME_STEP,
       render: RENDER_FRAME,
       observeInput: OBSERVE_INPUT,
@@ -11692,6 +11787,9 @@
     }
     return value;
   }
+  function displayClock(current, nowMs) {
+    return Math.max(current, finite(nowMs, "nowMs"));
+  }
   function ordinal(value, label) {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new TypeError(`${label} must be a nonnegative safe integer`);
@@ -11746,6 +11844,18 @@
         return this.time;
       }
       return Math.min(this.terminalEnd ?? this.latest, this.time + (nowMs - this.wall) * this.rate);
+    }
+    // 표본을 넣을 시각. displayMs는 지금 표시 시계(마지막으로 읽은 프레임 시각), nowMs는 표본이 나온 시각
+    // (틱 예정 시각·수신 시각, displayMs보다 과거가 아닌 값)입니다.
+    //   - 표시가 최신 표본을 향해 흐르는 중: 표시 시계에 넣습니다. 표시 시각·자세·개체 이력이 모두 같은 시각을
+    //     쓰고, 표본이 나온 시각이 다음 프레임 시각보다 뒤여도 표시는 프레임 시각이 늘어난 만큼만 흐릅니다.
+    //   - 표시가 최신 표본에 닿아 멈춰 있거나 첫 표본: 표본이 나온 시각에 넣습니다(표시 시계도 그 시각으로 갑니다).
+    //     이전 프레임 시각에 넣으면 표시가 표본 예정보다 최대 한 프레임 앞서 나중에 한 번 더 멈춥니다.
+    captureAt(displayMs, nowMs) {
+      if (!Number.isFinite(displayMs) || !Number.isFinite(this.latest)) {
+        return nowMs;
+      }
+      return this.sample(displayMs) >= this.latest ? nowMs : displayMs;
     }
     prepare(timeMs, nowMs, newEpoch, snap) {
       if (this.terminalEnd !== null && !newEpoch) {
@@ -12514,7 +12624,7 @@
     }
     /** Finish authority and advance the same display clock through a finite effects tail. */
     finish({ tailMs } = {}, nowMs) {
-      this.#checkClock(nowMs);
+      nowMs = this.#clock(nowMs);
       if (!this.#playhead) {
         throw new Error("terminal presentation requires a bounded clock");
       }
@@ -12536,7 +12646,7 @@
     }
     /** Change the bounded display rate after accounting for the previous rate through nowMs. */
     setRate(rate, nowMs) {
-      this.#checkClock(nowMs);
+      nowMs = this.#clock(nowMs);
       if (!this.#playhead || finite(rate, "rate") < 0) {
         throw new RangeError("setRate requires a bounded clock and nonnegative rate");
       }
@@ -12627,7 +12737,7 @@
       this.#previewSources = /* @__PURE__ */ new WeakMap();
     }
     releasePreview(nowMs) {
-      this.#checkClock(nowMs);
+      nowMs = this.#clock(nowMs);
       if (this.#delayMs) {
         for (const [ID, PREVIEW] of this.#preview) {
           if (PREVIEW.releaseAt !== void 0) {
@@ -12686,7 +12796,7 @@
     capturePreview(packet, nowMs) {
       const STARTED = performance.now();
       let bytes3 = 0;
-      this.#checkClock(nowMs);
+      nowMs = this.#clock(nowMs);
       if (this.#playhead && this.#playhead.terminalEnd !== null) {
         throw new Error("terminal presentation cannot capture a local preview");
       }
@@ -12774,11 +12884,10 @@
       const CURRENT = OWNER && this.#tracks.get(OWNER.id);
       return !!CURRENT && CURRENT.generation === OWNER.generation && CURRENT.model === value;
     }
-    #checkClock(now) {
-      finite(now, "nowMs");
-      if (now < this.#now) {
-        throw new RangeError("presentation clock must not go backwards");
-      }
+    // 표시 시계는 이 객체가 소유하고 되돌아가지 않습니다. 과거 시각(직전 호출보다 오래된 RAF timestamp 등)은
+    // 지금 표시 시계로 읽습니다.
+    #clock(nowMs) {
+      return displayClock(this.#now, nowMs);
     }
     /**
      * Full authoritative snapshot. timeMs/initialTimeMs/pathPoints use simulation milliseconds.
@@ -12792,7 +12901,7 @@
      * @param {number} nowMs
      */
     capture(packet, nowMs) {
-      this.#checkClock(nowMs);
+      nowMs = this.#playhead ? this.#playhead.captureAt(this.#now, this.#clock(nowMs)) : this.#clock(nowMs);
       if (!packet || typeof packet !== "object") {
         throw new TypeError("packet must be an object");
       }
@@ -13089,7 +13198,7 @@
     }
     /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
     sample(id, generation, nowMs) {
-      this.#checkClock(nowMs);
+      nowMs = this.#clock(nowMs);
       if (this.#pausedView) {
         const ITEM = this.#pausedView.items.get(id);
         this.#now = nowMs;
@@ -13161,7 +13270,7 @@
     }
     /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
     modelFor(source, nowMs) {
-      this.#checkClock(nowMs);
+      nowMs = this.#clock(nowMs);
       if (this.#pausedView) {
         const MODEL = source && typeof source === "object" ? this.#pausedView.models.get(source) : null;
         const PREVIEW2 = source && typeof source === "object" ? this.#previewSources.get(source) : null, OWNER = PREVIEW2 && this.#previewSelection.get(PREVIEW2.id) === PREVIEW2.generation ? PREVIEW2 : source && typeof source === "object" ? this.#sources.get(source) : null;
@@ -13191,7 +13300,7 @@
      * A new frame/capture invalidates this handle. No per-field proxy or deep copy on RAF.
      */
     frame(nowMs) {
-      this.#checkClock(nowMs);
+      nowMs = this.#clock(nowMs);
       this.#now = nowMs;
       const SERIAL = ++this.#frameSerial, DISPLAY_TIME = this.#displayTime(nowMs), CHECK = () => {
         if (SERIAL !== this.#frameSerial) {
@@ -15307,8 +15416,7 @@
       inputPreview: PEER.preview,
       rates: {
         baseHz: 120,
-        inputHz: 60,
-        renderHz: 60
+        inputHz: 60
       },
       canAdvance: () => PEER.session.tick < stopAt,
       canObserveInput: () => PEER.session.ready && !PEER.session.resimulating && PEER.publishedTick >= 0,

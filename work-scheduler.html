@@ -107,6 +107,7 @@
         <button role="tab" id="tab-portal" aria-selected="false" aria-controls="panel-portal">포털</button>
         <button role="tab" id="tab-vision" aria-selected="false" aria-controls="panel-vision">시야</button>
         <button role="tab" id="tab-contacts" aria-selected="false" aria-controls="panel-contacts">접촉</button>
+        <button role="tab" id="tab-frame" aria-selected="false" aria-controls="panel-frame">프레임 제한</button>
     </div>
     <section id="panel-budget" role="tabpanel" aria-labelledby="tab-budget">
         <h1>비긴급 탐색 작업 분산</h1>
@@ -265,6 +266,26 @@
             <button id="contacts-reset">처음으로</button>
         </div>
         <pre id="contacts-output"></pre>
+    </section>
+    <section id="panel-frame" role="tabpanel" aria-labelledby="tab-frame" hidden>
+        <h1>화면 주사의 정수 배로만 그립니다</h1>
+        <p>
+            화면 주사율을 고르면 그 간격의 프레임 시각 2초분을 simloop <code>FramePacer({ minHz: 60 })</code>에 넣어,
+            어느 프레임을 그리는지 보여 줍니다.
+        </p>
+        <ul>
+            <li>
+                60 fps 이상을 지키는 가장 큰 정수 k를 골라 화면 주사 k번마다 한 번 그립니다. 그린 간격이 모두 같습니다.
+            </li>
+            <li>처음 15프레임은 주사 간격을 재는 동안이라 모두 그립니다.</li>
+        </ul>
+        <div>
+            <button class="frame-hz" data-hz="60" aria-pressed="true">60 Hz</button>
+            <button class="frame-hz" data-hz="90" aria-pressed="false">90 Hz</button>
+            <button class="frame-hz" data-hz="120" aria-pressed="false">120 Hz</button>
+            <button class="frame-hz" data-hz="144" aria-pressed="false">144 Hz</button>
+        </div>
+        <pre id="frame-output"></pre>
     </section>
     <script>
 (() => {
@@ -11268,6 +11289,127 @@
     }
   };
   render();
+})();
+
+</script>
+
+<script>
+(() => {
+  // dist/simloop.js
+  var REFRESH_SAMPLES = 15;
+  var STRIDE_TOLERANCE = 0.05;
+  var STRIDE_MARGIN = 0.05;
+  var STRIDE_LEAD = 0.5;
+  var TARGET_LEAD = 0.95;
+  var FramePacer = class {
+    #targetMs;
+    #gaps = new Float64Array(REFRESH_SAMPLES);
+    #sorted = new Float64Array(REFRESH_SAMPLES);
+    #gapCount = 0;
+    #seenAt = null;
+    #drawnAt = -Infinity;
+    #refreshMs = 0;
+    #stride = 1;
+    /** @param {{minHz:number}} options 이 빈도 이상으로 그립니다(화면 주사율이 더 낮으면 주사율대로). */
+    constructor({ minHz } = {}) {
+      if (!Number.isFinite(minHz) || minHz <= 0) {
+        throw new RangeError("minHz must be a positive frequency");
+      }
+      this.#targetMs = 1e3 / minHz;
+    }
+    /** 추정한 화면 주사 간격(ms). 표본이 차기 전에는 0입니다. */
+    get refreshMs() {
+      return this.#refreshMs;
+    }
+    /** 화면 주사 몇 번마다 그리는지(k). */
+    get stride() {
+      return this.#stride;
+    }
+    /**
+     * 화면 프레임 하나를 받습니다. true면 이 프레임을 그리고(그린 것으로 기록), false면 건너뜁니다.
+     * RAF 콜백마다 한 번, 그 콜백의 timestamp로 부릅니다.
+     */
+    accept(timestampMs) {
+      if (!Number.isFinite(timestampMs)) {
+        throw new TypeError("frame timestamp");
+      }
+      this.#observe(timestampMs);
+      const DUE_MS = Math.min((this.#stride - STRIDE_LEAD) * this.#refreshMs, TARGET_LEAD * this.#targetMs);
+      if (timestampMs - this.#drawnAt < DUE_MS) {
+        return false;
+      }
+      this.#drawnAt = timestampMs;
+      return true;
+    }
+    /** RAF를 멈췄다 다시 시작할 때: 멈춘 동안의 간격을 표본에 넣지 않습니다. 추정과 k는 유지합니다. */
+    rebase() {
+      this.#seenAt = null;
+    }
+    // RAF 간격 하나를 표본에 넣고, 표본이 다 차 있으면 중앙값을 주사 간격으로 삼아 k를 맞춥니다.
+    #observe(timestampMs) {
+      const GAP = this.#seenAt === null ? 0 : timestampMs - this.#seenAt;
+      this.#seenAt = timestampMs;
+      if (GAP <= 0) {
+        return;
+      }
+      this.#gaps[this.#gapCount % REFRESH_SAMPLES] = GAP;
+      this.#gapCount++;
+      if (this.#gapCount < REFRESH_SAMPLES) {
+        return;
+      }
+      this.#sorted.set(this.#gaps);
+      this.#sorted.sort();
+      const DECIDED = this.#refreshMs > 0;
+      this.#refreshMs = this.#sorted[REFRESH_SAMPLES >> 1];
+      const RATIO = this.#targetMs / this.#refreshMs + STRIDE_TOLERANCE, MARGIN = DECIDED ? STRIDE_MARGIN : 0, UP = Math.floor(RATIO - MARGIN), DOWN = Math.floor(RATIO + MARGIN);
+      if (UP > this.#stride) {
+        this.#stride = UP;
+      } else if (DOWN < this.#stride) {
+        this.#stride = Math.max(1, DOWN);
+      }
+    }
+  };
+  var NO_CAPTURES = Object.freeze([]);
+
+  // modules/work-scheduler/examples/modules/work-scheduler/examples/index.html
+  var MIN_HZ = 60;
+  var SHOWN_FRAMES = 48;
+  function run(hz) {
+    const PACER = new FramePacer({ minHz: MIN_HZ }), FRAMES = hz * 2, MARKS = [];
+    let drawn = 0, lastDrawnAt = null, intervalMs = 0;
+    for (let i = 0; i < FRAMES; i++) {
+      const AT = i * 1e3 / hz, DRAW = PACER.accept(AT);
+      if (DRAW) {
+        if (i >= FRAMES - hz) {
+          drawn++;
+        }
+        intervalMs = lastDrawnAt === null ? 0 : AT - lastDrawnAt;
+        lastDrawnAt = AT;
+      }
+      if (i < SHOWN_FRAMES) {
+        MARKS.push(DRAW ? "■" : "·");
+      }
+    }
+    return { hz, stride: PACER.stride, refreshMs: PACER.refreshMs, intervalMs, fps: drawn, marks: MARKS.join("") };
+  }
+  function show(hz) {
+    const RESULT = run(hz);
+    for (const BUTTON of document.querySelectorAll(".frame-hz")) {
+      BUTTON.setAttribute("aria-pressed", String(Number(BUTTON.dataset.hz) === hz));
+    }
+    document.querySelector("#frame-output").textContent = [
+      `화면 ${hz} Hz (주사 간격 ${RESULT.refreshMs.toFixed(2)} ms) · 목표 ${MIN_HZ} fps 이상`,
+      `k = ${RESULT.stride} → 그린 간격 ${RESULT.intervalMs.toFixed(2)} ms, 마지막 1초에 ${RESULT.fps}번`,
+      `처음 ${SHOWN_FRAMES}프레임 (■ 그림, · 건너뜀)`,
+      RESULT.marks
+    ].join("\n");
+    return RESULT;
+  }
+  for (const BUTTON of document.querySelectorAll(".frame-hz")) {
+    BUTTON.addEventListener("click", () => show(Number(BUTTON.dataset.hz)));
+  }
+  window.frameLimitExample = { show };
+  show(60);
 })();
 
 </script>
