@@ -108,6 +108,63 @@ export async function runFrameChecks(page) {
             JITTER_BEFORE === 70 && JITTER.frame(200).sample('b', 0).x === 70,
             'the following 70ms arrival retargets without a visible jump',
         );
+        // 표시 시계: capture에는 틱 예정 시각, frame에는 화면 프레임 시각(RAF timestamp)을 그대로 넘깁니다.
+        // 프레임 콜백은 프레임 시각보다 3ms 늦게 돌아, 그 사이에 예정된 틱의 capture가 프레임 시각보다 뒤입니다.
+        const CLOCKED = new PRESENTATION_RUNTIME({ stepMs: 50, delayMs: 50, clock: 'bounded' }),
+            CLOCK_PACKET = (tick, revision = 0, mode = 'continuous') => ({
+                revision,
+                sequence: tick,
+                timeMs: tick * 50,
+                mode,
+                entities: [SHOT(tick * 50)],
+            }),
+            CLOCK_STEPS = [];
+        CLOCKED.capture(CLOCK_PACKET(0, 0, 'reset'), 500);
+        let clockTick = 0,
+            clockShown = 0;
+        for (let frameAt = 516; frameAt <= 1000; frameAt += 16) {
+            while (500 + 50 * (clockTick + 1) <= frameAt + 3) {
+                clockTick++;
+                CLOCKED.capture(CLOCK_PACKET(clockTick), 500 + 50 * clockTick);
+            }
+            const SHOWN = CLOCKED.frame(frameAt).timeMs;
+            if (frameAt > 564) {
+                CLOCK_STEPS.push(SHOWN - clockShown);
+            }
+            clockShown = SHOWN;
+        }
+        CHECK(
+            CLOCK_STEPS.length === 27 && CLOCK_STEPS.every((step) => step === 16) && clockShown === 446,
+            'display time advances by exactly the frame interval while tick-due captures are newer than the frame timestamp: ' +
+                JSON.stringify(CLOCK_STEPS),
+        );
+        // 롤백 뒤 프레임 없이 두 틱을 잇달아 받아도, 다음 표본을 그 틱의 예정 시각에 붙여 표시가 멈추지 않습니다.
+        CLOCKED.capture(CLOCK_PACKET(11, 1, 'rollback'), 1050);
+        CLOCKED.capture(CLOCK_PACKET(12, 1), 1100);
+        CHECK(
+            CLOCKED.frame(1100).timeMs === 550 &&
+                CLOCKED.frame(1116).timeMs === 566 &&
+                CLOCKED.frame(1132).timeMs === 582 &&
+                CLOCKED.frame(1100).timeMs === 582 &&
+                CLOCKED.frame(1132).nowMs === 1132,
+            'consecutive captures after a rollback attach to the tick due time, and a past frame time reads the current display clock',
+        );
+        const CLOCKED_SCALAR = new INTERPOLATION_TIMELINE({
+            schema: { x: 'number' },
+            stepMs: 50,
+            delayMs: 50,
+            clock: 'bounded',
+        });
+        CLOCKED_SCALAR.accept({ revision: 0, sequence: 0, timeMs: 0, mode: 'reset', entities: [] }, 500);
+        CLOCKED_SCALAR.accept({ revision: 0, sequence: 1, timeMs: 50, entities: [] }, 550);
+        // 세 번째 표본은 예정(600)보다 2ms 늦게 나옵니다. 표시는 50에서 2ms 멈췄다가 602부터 이어집니다.
+        CLOCKED_SCALAR.accept({ revision: 0, sequence: 2, timeMs: 100, entities: [] }, 602);
+        CHECK(
+            CLOCKED_SCALAR.displayTime(564) === 14 &&
+                CLOCKED_SCALAR.displayTime(600) === 50 &&
+                CLOCKED_SCALAR.displayTime(616) === 64,
+            'the scalar timeline owns the same display clock',
+        );
         const FIXED_COMPARISON = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200 }),
             LATEST_COMPARISON = new PRESENTATION_RUNTIME({ stepMs: 100, delayMs: 200, clock: 'bounded' });
         for (let i = 0; i <= 10; i++) {

@@ -1,3 +1,20 @@
+## v0.65.0 (2026-11-18)
+
+호환되지 않는 변경(MINOR). simloop에 프레임 제한을 넣고, 보간(interpolation)이 표시 시계를 소유합니다. 발배구가 60 Hz 제한과 표시 시계를 게임 코드로 직접 짰다가 화면이 끊겼습니다(콜백 시각으로 판정해 rAF 600번 중 430번만 그림, 콜백 시각으로 보간해 표시 시각 증가가 8~28 ms로 흔들림). 같은 모듈을 쓰는 게임마다 답이 달랐으므로 모듈이 맡습니다. 게임 미배포라 호환 래퍼 없이 바꿉니다.
+
+- simloop `createLoop({ frame: { minHz } })`: 자동 rAF와 `loop.frame(timestamp)`가 화면 주사 k번마다 한 번 그립니다(k는 `minHz` 이상을 지키는 가장 큰 정수: 60 Hz → 60, 90 → 90, 120 → 60, 144 → 72, 165 → 82.5 fps). 판정은 rAF timestamp로 하고 `min((k − 0.5) × 주사 간격, 0.95 × 1000/minHz)`만큼 지났으면 그립니다. 주사 간격은 최근 rAF 간격 15개의 중앙값, k 전환에는 0.05 여유, 표본이 차기 전에는 프레임마다 그립니다. 건너뛴 프레임은 입력 관찰·틱·그리기를 하지 않습니다.
+- simloop `FramePacer({ minHz })`: 같은 판정기입니다(`accept(timestamp)`, `rebase()`, `refreshMs`, `stride`). rAF를 소유하지 않아 세션 없이 그리는 화면에서도 씁니다. 프레임 경로 할당 없음.
+- simloop 시각 전달: `render({ frameTimeMs })`(화면 프레임 시각), `onAdvance(result, submission, tickTimeMs)`(틱 예정 시각). `loop.frame(timestamp)`은 rAF timestamp를 받고 그렸는지를 boolean으로 돌려줍니다. 보조 타이머가 `performance.now()`로 먼저 진행한 뒤 더 오래된 rAF timestamp가 와도 같은 시간을 두 번 세지 않습니다(이전에는 drop 정책에서 그만큼 시뮬 시간이 더 흘렀습니다). `loop.render(timestamp?)`.
+- interpolation 표시 시계: `PresentationRuntime`·`InterpolationTimeline`이 받은 시각을 되돌아가지 않게 읽습니다. `clock: 'bounded'`에서 capture의 시각은 표본이 나온 시각이고 표시 시계를 밀지 않습니다. 표본은 그 시각부터 유효하며, 표시가 이전 표본에 닿아 멈춰 있었다면 그 시각부터 다시 흐릅니다. `capture(packet, tickTimeMs)`·`frame(frameTimeMs)`만 넘기면 표시 시각이 프레임 시각만큼만 늘어납니다.
+- 깨지는 것:
+    - `rates.renderHz`·`clockRates`의 `renderHz`·`renderDivisor`를 없앴습니다(조회만 하던 값). `rates`와 `clockRates`에 모르는 키를 넣으면 `TypeError`입니다. 표시 상한은 `frame: { minHz }`로 줍니다.
+    - 보간 시각이 뒤로 가도 `RangeError('presentation clock must not go backwards')`를 던지지 않고 지금 표시 시계로 읽습니다.
+    - bounded 시계에서 capture 뒤 그 capture 시각보다 오래된 시각으로 읽으면 이전에는 예외였고 이제는 이전 표본까지만 보입니다. capture와 읽기 시각이 단조인 기존 호출 순서의 결과는 같습니다.
+    - `loop.frame`의 반환값이 `undefined`에서 boolean으로 바뀌었습니다.
+- 시험: core 고정 시나리오에 프레임 제한(60·90·120·144·165 Hz의 k와 간격, 120 Hz 첫 15프레임, 1초 간격 15회 뒤 복귀, 8.53 ↔ 8.56 ms 경계, `frame.minHz` 루프의 시각 전달, 타이머 뒤 오래된 rAF timestamp)과 표시 시계(틱 예정 시각 capture + 그보다 오래된 프레임 시각에서 표시 증가가 프레임 간격과 같음, 롤백 뒤 프레임 없는 연속 capture, 과거 시각 읽기, scalar timeline)를 더했습니다.
+- 예제: 통합 예제(work-scheduler 예제 페이지)에 "프레임 제한" 탭을 더했습니다(합성 60·90·120·144 Hz에서 그리는 프레임). 보간 통합 예제는 `tickTimeMs`·`frameTimeMs`를 그대로 넘깁니다.
+- 소비 게임이 고칠 것: `rates`에서 `renderHz` 제거 → `frame: { minHz }`. 직접 짠 rAF 간격 제한과 `Math.max`로 맞추던 capture·frame 시계 삭제 → `tickTimeMs`·`frameTimeMs` 전달.
+
 ## v0.64.0 (2026-11-14)
 
 기능 추가(MINOR). deterministic `tickTime({ tickRate })`를 더했습니다. 발배구 틱을 60에서 20으로 바꾸려 했으나 AI 판단 주기·점프 유지·롤백 창이 틱 개수로 적혀 있어 설정 한 줄 변경이 되지 않았습니다([DEV-035](https://github.com/byh-playground/bloom-reference/blob/main/rules/development.md#time-in-ms)). 시간 값은 ms로 적고, 계산 자리마다 누적 코드를 짜는 대신 이 도우미 하나를 부릅니다.

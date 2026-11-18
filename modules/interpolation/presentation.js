@@ -105,7 +105,7 @@ export class PresentationRuntime {
     }
     /** Finish authority and advance the same display clock through a finite effects tail. */
     finish({ tailMs } = {}, nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (!this.#playhead) {
             throw new Error('terminal presentation requires a bounded clock');
         }
@@ -127,7 +127,7 @@ export class PresentationRuntime {
     }
     /** Change the bounded display rate after accounting for the previous rate through nowMs. */
     setRate(rate, nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (!this.#playhead || finite(rate, 'rate') < 0) {
             throw new RangeError('setRate requires a bounded clock and nonnegative rate');
         }
@@ -235,7 +235,7 @@ export class PresentationRuntime {
         this.#previewSources = new WeakMap();
     }
     releasePreview(nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (this.#delayMs) {
             // Keep a separate local handoff until the buffered clock reaches this
             // checkpoint. Rewriting its historical interval would also corrupt remote
@@ -312,7 +312,7 @@ export class PresentationRuntime {
     capturePreview(packet, nowMs) {
         const STARTED = performance.now();
         let bytes = 0;
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (this.#playhead && this.#playhead.terminalEnd !== null) {
             throw new Error('terminal presentation cannot capture a local preview');
         }
@@ -429,11 +429,10 @@ export class PresentationRuntime {
         const CURRENT = OWNER && this.#tracks.get(OWNER.id);
         return !!CURRENT && CURRENT.generation === OWNER.generation && CURRENT.model === value;
     }
-    #checkClock(now) {
-        finite(now, 'nowMs');
-        if (now < this.#now) {
-            throw new RangeError('presentation clock must not go backwards');
-        }
+    // 표시 시계는 이 객체가 소유하고 되돌아가지 않습니다. 과거 시각(직전 capture보다 오래된 RAF timestamp 등)은
+    // 지금 표시 시계로 읽습니다.
+    #clock(nowMs) {
+        return Math.max(this.#now, finite(nowMs, 'nowMs'));
     }
 
     /**
@@ -448,7 +447,8 @@ export class PresentationRuntime {
      * @param {number} nowMs
      */
     capture(packet, nowMs) {
-        this.#checkClock(nowMs);
+        const DISPLAY_NOW = this.#now;
+        nowMs = this.#clock(nowMs);
         if (!packet || typeof packet !== 'object') {
             throw new TypeError('packet must be an object');
         }
@@ -476,7 +476,7 @@ export class PresentationRuntime {
             throw new TypeError('entities must be an array');
         }
         const ORIGIN = CHANGED ? nowMs - TIME_MS : this.#origin;
-        const PLAYHEAD_PLAN = this.#playhead?.prepare(TIME_MS, nowMs, CHANGED, MODE !== 'continuous');
+        const PLAYHEAD_PLAN = this.#playhead?.prepare(TIME_MS, nowMs, CHANGED, MODE !== 'continuous', DISPLAY_NOW);
         if (PLAYHEAD_PLAN && (!Number.isFinite(ORIGIN) || !Number.isFinite(PLAYHEAD_PLAN.time))) {
             throw new RangeError('bounded presentation clock overflow');
         }
@@ -743,7 +743,8 @@ export class PresentationRuntime {
         this.#revision = REVISION;
         this.#sequence = SEQUENCE;
         this.#timeMs = TIME_MS;
-        this.#now = nowMs;
+        // bounded 시계는 표시가 흐르는 중이면 표시 시계를 밀지 않습니다(BoundedPlayhead.prepare).
+        this.#now = PLAYHEAD_PLAN ? PLAYHEAD_PLAN.clock : nowMs;
         if (this.#pausedView && CHANGED) {
             // Explicit seek/reset while paused is a new scene, not hidden live progress.
             this.#pausedView = null;
@@ -847,7 +848,7 @@ export class PresentationRuntime {
 
     /** 유효 identity가 아니면 null. 원본 fallback은 없습니다. 모델은 프레임 간 재사용됩니다. */
     sample(id, generation, nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (this.#pausedView) {
             const ITEM = this.#pausedView.items.get(id);
             this.#now = nowMs;
@@ -936,7 +937,7 @@ export class PresentationRuntime {
 
     /** 등록된 원본 객체나 유효한 모델만 받습니다. 삭제·세대 변경된 모델은 다시 그리지 않습니다. */
     modelFor(source, nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         if (this.#pausedView) {
             const MODEL = source && typeof source === 'object' ? this.#pausedView.models.get(source) : null;
             const PREVIEW = source && typeof source === 'object' ? this.#previewSources.get(source) : null,
@@ -973,7 +974,7 @@ export class PresentationRuntime {
      * A new frame/capture invalidates this handle. No per-field proxy or deep copy on RAF.
      */
     frame(nowMs) {
-        this.#checkClock(nowMs);
+        nowMs = this.#clock(nowMs);
         this.#now = nowMs;
         const SERIAL = ++this.#frameSerial,
             DISPLAY_TIME = this.#displayTime(nowMs),

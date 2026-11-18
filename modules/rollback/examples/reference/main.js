@@ -421,7 +421,6 @@ function installPeer(room, tps) {
         rates: {
             baseHz: 120,
             inputHz: 60,
-            renderHz: 60,
         },
         canAdvance: () => PEER.session.tick < stopAt,
         canObserveInput: () => PEER.session.ready && !PEER.session.resimulating && PEER.publishedTick >= 0,

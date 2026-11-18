@@ -157,8 +157,6 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
     let tick = 0;
     let rollUntilMs = 0;
     let lastMs = performance.now();
-    let frameNow = lastMs;
-    let stepped = false;
     let zoom = 1;
     let paused = false;
     let lastMetricMs = lastMs;
@@ -427,26 +425,20 @@ export function startDemo(canvas, status, { autoStart = true } = {}) {
     const LOOP = createLoop({
         session: LOCAL_SESSION,
         canAdvance: () => !paused,
-        beforeFrame() {
-            // rAF timestamp may precede setup performed in the same frame. Presentation
-            // receipt and sampling keep the same performance.now() clock as initial state.
-            const NOW = performance.now();
-            frameNow = NOW;
-            stepped = false;
+        beforeFrame(timestamp) {
             if (!paused && DIAGNOSTICS.frameIntervals.length < 180) {
-                DIAGNOSTICS.frameIntervals.push(Math.max(0, Math.min(250, NOW - lastMs)));
+                DIAGNOSTICS.frameIntervals.push(Math.max(0, Math.min(250, timestamp - lastMs)));
             }
-            lastMs = NOW;
+            lastMs = timestamp;
         },
-        onAdvance() {
-            stepped = true;
+        // 게시에는 틱 예정 시각을, 표시에는 화면 프레임 시각을 그대로 넘깁니다. 보간이 표시 시계를 소유하므로
+        // 프레임 시각이 직전 게시 시각보다 오래돼도 됩니다.
+        onAdvance(_result, _submission, tickTimeMs) {
+            receive(tickTimeMs);
         },
-        render() {
+        render({ frameTimeMs }) {
             if (!paused) {
-                if (stepped) {
-                    receive(frameNow);
-                }
-                render(frameNow);
+                render(frameTimeMs);
             }
         },
     });

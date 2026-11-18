@@ -128,6 +128,7 @@ try {
             createLoop: CREATE_LOOP,
             createDeadlineScheduler: CREATE_DEADLINE_SCHEDULER,
             clockRates: CLOCK_RATES,
+            FramePacer: FRAME_PACER,
         } = await import('/dist/simloop.js');
         const { InterpolationTimeline: INTERPOLATION_TIMELINE } = await import('/dist/interpolation.js');
         let rejected = false;
@@ -136,7 +137,6 @@ try {
                 baseHz: 60,
                 tickRate: 45,
                 inputHz: 60,
-                renderHz: 60,
             });
         } catch (e) {
             rejected = e instanceof RangeError;
@@ -145,7 +145,6 @@ try {
             baseHz: 60,
             tickRate: 30,
             inputHz: 60,
-            renderHz: 60,
         });
         const SESSION = {
             inputSize: 1,
@@ -239,6 +238,108 @@ try {
         const PAINTS_BEFORE_FAILURE = failedPaints;
         FAIL_LOOP.frame(100);
         const FRAME_PASSED = FRAME_TICKS === 2 && framePaints === 2 && failedPaints === PAINTS_BEFORE_FAILURE;
+        // 프레임 제한: 합성 RAF 시각을 FramePacer에 넣어 그린 간격을 봅니다.
+        const PACED = (minHz, gaps) => {
+            const PACER = new FRAME_PACER({ minHz }),
+                DRAWN = [];
+            let at = 1000;
+            for (const GAP of gaps) {
+                at += GAP;
+                if (PACER.accept(at)) {
+                    DRAWN.push(at);
+                }
+            }
+            return { drawn: DRAWN, stride: PACER.stride };
+        };
+        const STEADY = (hz, frames) => Array(frames).fill(1000 / hz);
+        // 표본이 찬 뒤(처음 30프레임 제외)의 그린 간격이 모두 주사 간격의 k배인지.
+        const STEADY_STRIDE = (hz) => {
+            const RESULT = PACED(60, STEADY(hz, hz * 2)),
+                TAIL = RESULT.drawn.slice(RESULT.drawn.length - 20),
+                EXPECTED = (1000 / hz) * RESULT.stride;
+            for (let i = 1; i < TAIL.length; i++) {
+                if (Math.abs(TAIL[i] - TAIL[i - 1] - EXPECTED) > 1e-6) {
+                    return 0;
+                }
+            }
+            return RESULT.stride;
+        };
+        const PACER_STRIDES = [60, 90, 120, 144, 165].map(STEADY_STRIDE);
+        // 표본이 차기 전: 120 Hz 첫 15프레임을 모두 그립니다.
+        const PACER_WARMUP = PACED(60, STEADY(120, 15)).drawn.length;
+        // 1초 간격 15회(추정 1000 ms) 뒤 60 Hz 복귀: 복귀 뒤 12프레임을 모두 그립니다.
+        const PACER_RETURN = PACED(60, [...STEADY(60, 60), ...Array(15).fill(1000), ...STEADY(60, 12)]).drawn.length;
+        // 경계(약 117 Hz): 간격 8.53 ↔ 8.56 ms를 117프레임마다 번갈아도 k가 2로 유지됩니다.
+        const BOUNDARY_PACER = new FRAME_PACER({ minHz: 60 }),
+            BOUNDARY_STRIDES = new Set();
+        for (let i = 0, at = 1000; i < 1170; i++) {
+            at += Math.floor(i / 117) % 2 ? 8.56 : 8.53;
+            BOUNDARY_PACER.accept(at);
+            if (i > 30) {
+                BOUNDARY_STRIDES.add(BOUNDARY_PACER.stride);
+            }
+        }
+        let pacerRejected = false;
+        try {
+            new FRAME_PACER({ minHz: 0 });
+        } catch (e) {
+            pacerRejected = e instanceof RangeError;
+        }
+        let renderRateRejected = false;
+        try {
+            CLOCK_RATES({ baseHz: 60, tickRate: 30, inputHz: 60, renderHz: 60 });
+        } catch (e) {
+            renderRateRejected = e instanceof TypeError;
+        }
+        // createLoop의 frame.minHz: 120 Hz RAF에서 loop.frame이 두 번에 한 번만 실행하고, 그리기에는 받은 프레임 시각을,
+        // onAdvance에는 틱 예정 시각을 넘깁니다. 건너뛴 프레임은 틱도 돌리지 않습니다.
+        const PACED_SESSION = { ...SESSION, tick: 0, advance: SESSION.advance },
+            PACED_FRAME_TIMES = [],
+            PACED_TICK_TIMES = [];
+        const PACED_LOOP = CREATE_LOOP({
+            session: PACED_SESSION,
+            frame: { minHz: 60 },
+            onAdvance: (_result, _submission, tickTimeMs) => PACED_TICK_TIMES.push(tickTimeMs),
+            render: ({ frameTimeMs }) => PACED_FRAME_TIMES.push(frameTimeMs),
+        });
+        let pacedRuns = 0,
+            pacedTicksOnSkip = 0;
+        for (let i = 0; i < 120; i++) {
+            const BEFORE = PACED_SESSION.tick;
+            if (PACED_LOOP.frame(i * 8)) {
+                pacedRuns++;
+            } else {
+                pacedTicksOnSkip += PACED_SESSION.tick - BEFORE;
+            }
+        }
+        const PACED_LAST = PACED_FRAME_TIMES.slice(-3);
+        // 보조 타이머가 performance.now()로 먼저 진행한 뒤 더 오래된 RAF timestamp가 와도 같은 시간을 두 번 세지 않습니다.
+        const MIXED_SESSION = { ...SESSION, tick: 0, advance: SESSION.advance },
+            MIXED_FRAMES = [];
+        const MIXED_LOOP = CREATE_LOOP({
+            session: MIXED_SESSION,
+            render: ({ frameTimeMs }) => MIXED_FRAMES.push(frameTimeMs),
+        });
+        MIXED_LOOP.pulse(0, { render: false });
+        for (let i = 1; i <= 30; i++) {
+            MIXED_LOOP.pulse(i * 20 + 3, { render: false }); // 타이머: 프레임 시각보다 3ms 뒤
+            MIXED_LOOP.frame(i * 20); // RAF timestamp: 직전 타이머 시각보다 과거
+        }
+        const FRAME_LIMIT = {
+            strides: PACER_STRIDES,
+            warmup: PACER_WARMUP,
+            returned: PACER_RETURN,
+            boundary: [...BOUNDARY_STRIDES],
+            pacerRejected,
+            renderRateRejected,
+            pacedRuns,
+            pacedTicksOnSkip,
+            pacedLast: PACED_LAST,
+            pacedTickTimes: PACED_TICK_TIMES.slice(0, 3),
+            pacedTicks: PACED_SESSION.tick,
+            mixedTicks: MIXED_SESSION.tick,
+            mixedFrames: MIXED_FRAMES.slice(0, 2),
+        };
         const DEFER_SESSION = {
             inputSize: 1,
             tick: 0,
@@ -637,6 +738,7 @@ try {
             advances: ADVANCES,
             caughtUp: CAUGHT_UP,
             framePassed: FRAME_PASSED,
+            frameLimit: FRAME_LIMIT,
             x: X,
             end: OUT.x,
             deferPassed: DEFER_PASSED,
@@ -661,6 +763,25 @@ try {
         CLOCK_CHECK.framePassed,
         true,
         'loop.frame advances backlog then renders; failed advance skips render',
+    );
+    assert.deepEqual(
+        CLOCK_CHECK.frameLimit,
+        {
+            strides: [1, 1, 2, 2, 2],
+            warmup: 15,
+            returned: 60 + 15 + 12,
+            boundary: [2],
+            pacerRejected: true,
+            renderRateRejected: true,
+            pacedRuns: 15 + 52,
+            pacedTicksOnSkip: 0,
+            pacedLast: [912, 928, 944],
+            pacedTickTimes: [100 / 3, 200 / 3, 100],
+            pacedTicks: 28,
+            mixedTicks: 18,
+            mixedFrames: [20, 40],
+        },
+        'frame limit draws on integer refresh multiples, loop.frame hands the frame time to render and the tick due time to onAdvance',
     );
     assert.ok(
         CLOCK_CHECK.deferPassed &&

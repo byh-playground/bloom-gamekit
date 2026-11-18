@@ -1,4 +1,5 @@
 import { clockRates } from './rates.js';
+import { FramePacer } from './frame-pacer.js';
 const NO_CAPTURES = Object.freeze([]);
 /** Fixed Simulation dt, separately adjustable real-time scheduling. No import side effects. */
 export function createLoop({
@@ -7,6 +8,7 @@ export function createLoop({
     render = () => {},
     inputPreview,
     rates,
+    frame,
     backlogPolicy = 'drop',
     beforeFrame = () => {},
     canAdvance = () => true,
@@ -55,6 +57,8 @@ export function createLoop({
                   ...rates,
                   tickRate: session.profile.tickRate,
               });
+    // 프레임 제한: 자동 RAF와 frame(timestamp)이 같은 판정기를 씁니다. 없으면 RAF마다 그립니다.
+    const PACER = frame === undefined ? null : new FramePacer(frame);
     const QUANTUM = 1000 / session.profile.tickRate;
     const MAX_BACKLOG_MS = QUANTUM * maxBacklogTicks;
     const REPORT_BACKLOG_DROP = (elapsedMs, droppedMs, timestamp, reason) => {
@@ -75,6 +79,8 @@ export function createLoop({
     let accumulator = 0;
     let generation = 0;
     let timingGeneration = 0;
+    // 마지막으로 그리기에 넘긴 화면 프레임 시각. 한 번도 없으면 null입니다.
+    let frameAt = null;
     if (inputPreview && typeof inputPreview.observe !== 'function') {
         throw new TypeError('inputPreview observation capability');
     }
@@ -195,16 +201,30 @@ export function createLoop({
         }
         handle = undefined;
         inputPreview?.clear?.();
+        PACER?.rebase();
         globalThis.removeEventListener?.('blur', RELEASE);
         globalThis.document?.removeEventListener('visibilitychange', HIDDEN);
     };
-    const RENDER_FRAME = () =>
+    const RENDER_FRAME = (timestamp) => {
+        if (timestamp !== undefined) {
+            if (!Number.isFinite(timestamp)) {
+                throw new TypeError('frame timestamp');
+            }
+            frameAt = timestamp;
+        }
         render({
             session,
             alpha: Math.min(1, accumulator / QUANTUM),
             resimulating: session.resimulating,
+            frameTimeMs: frameAt,
         });
-    const PULSE = (timestamp, { render: shouldRender = true, input: shouldSampleInput = true } = {}) => {
+    };
+    // frameTimestamp: 그리기에 넘길 화면 프레임 시각. frame()은 RAF timestamp 그대로, 그 밖에는 pulse의 시각입니다.
+    const PULSE = (
+        timestamp,
+        { render: shouldRender = true, input: shouldSampleInput = true } = {},
+        frameTimestamp = timestamp,
+    ) => {
         const CURRENT = generation;
         try {
             if (!Number.isFinite(timestamp)) {
@@ -429,7 +449,8 @@ export function createLoop({
                 if (CURRENT !== generation) {
                     return;
                 }
-                onAdvance(RESULT, submission);
+                // 세 번째 값은 방금 끝난 틱의 예정 시각(simulationTimeMs와 같은 값)입니다. 표시 capture에 그대로 넘깁니다.
+                onAdvance(RESULT, submission, last - accumulator);
                 if (CURRENT !== generation || TIMING !== timingGeneration) {
                     return;
                 }
@@ -439,7 +460,8 @@ export function createLoop({
             }
             // Rendering continues when the session is waiting for input or connection recovery.
             if (shouldRender) {
-                RENDER_FRAME();
+                RENDER_FRAME(frameTimestamp);
+                return true;
             }
         } catch (error) {
             if (CURRENT === generation) {
@@ -448,12 +470,19 @@ export function createLoop({
             onError(error);
         }
     };
-    // rAF 한 번분: 입력 관찰 → 밀린 틱 진행 → 그리기. 진행이 실패(stop·onError)하면 그리지 않습니다.
+    // rAF 한 번분: (프레임 제한 판정 →) 입력 관찰 → 밀린 틱 진행 → 그리기. 진행이 실패(stop·onError)하면 그리지 않습니다.
+    // timestamp는 RAF timestamp입니다. 그렸으면 true입니다. 프레임 제한이 건너뛴 프레임은 아무것도 하지 않고 false를 돌려줍니다.
     const FRAME_STEP = (timestamp) => {
-        if (inputPreview || HAS_SUBMISSION) {
-            OBSERVE_INPUT(timestamp);
+        if (PACER && !PACER.accept(timestamp)) {
+            return false;
         }
-        PULSE(timestamp);
+        // RAF timestamp는 보조 타이머가 performance.now()로 먼저 진행한 시각보다 과거일 수 있습니다.
+        // 틱 진행에는 루프가 본 마지막 시각보다 뒤로 가지 않는 시각을 쓰고(같은 시간을 두 번 세지 않게), 그리기에는 받은 시각을 그대로 넘깁니다.
+        const TICK_AT = last !== undefined && timestamp < last ? last : timestamp;
+        if (inputPreview || HAS_SUBMISSION) {
+            OBSERVE_INPUT(TICK_AT);
+        }
+        return PULSE(TICK_AT, undefined, timestamp) === true;
     };
     const START = () => {
         if (running) {
@@ -498,7 +527,9 @@ export function createLoop({
         },
         start: START,
         stop: STOP,
-        pulse: PULSE,
+        pulse(timestamp, options) {
+            PULSE(timestamp, options);
+        },
         frame: FRAME_STEP,
         render: RENDER_FRAME,
         observeInput: OBSERVE_INPUT,
