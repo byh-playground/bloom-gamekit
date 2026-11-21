@@ -70,18 +70,20 @@ createSession({ rollbackWindowTicks: time.ceilTicks(profile.rollbackWindowMs) })
 cooldownLabel.textContent = Math.ceil(time.remainingMs(state.dashCooldown) / 100) / 10 + 's';
 ```
 
-| 쓰임              | 호출                                                                                      | 상태 값                                       |
-| ----------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------- |
-| 반복 주기         | `acc = time.every(acc, periodMs, fn?, arg?)`                                              | 누적값. 처음 0, 늘 `[0, periodMs × tickRate)` |
-| 한 번만 도는 주기 | `acc = time.everyOnce(acc, periodMs, fn?, arg?)`                                          | `every`와 같은 값                             |
-| 발동 횟수만       | `n = time.fires(acc, periodMs)` 뒤 `acc = time.every(acc, periodMs)`                      | 같은 값                                       |
-| 지속·지연·쿨다운  | `r = time.start(ms)` → 매 틱 `r = time.advance(r, fn?, arg?)` → `time.done(r)`            | 남은 시간. 0이 끝남·대기                      |
-| 외부 API 경계     | `time.ceilTicks(ms)`                                                                      | 틱 개수(올림)                                 |
-| 표시·보간         | `time.stepMs`, `time.remainingMs(r)`, `time.elapsedMs(r, totalMs)`, `time.tickToMs(tick)` | 소수 가능                                     |
+| 쓰임              | 호출                                                                                                                             | 상태 값                                       |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| 반복 주기         | `acc = time.every(acc, periodMs, fn?, arg?)`                                                                                     | 누적값. 처음 0, 늘 `[0, periodMs × tickRate)` |
+| 한 번만 도는 주기 | `acc = time.everyOnce(acc, periodMs, fn?, arg?)`                                                                                 | `every`와 같은 값                             |
+| 발동 횟수만       | `n = time.fires(acc, periodMs)` 뒤 `acc = time.every(acc, periodMs)`                                                             | 같은 값                                       |
+| 지속·지연·쿨다운  | `r = time.start(ms)` → 매 틱 `r = time.advance(r, fn?, arg?)` → `time.done(r)`                                                   | 남은 시간. 0이 끝남·대기                      |
+| 조건부 쿨다운     | 매 틱 `acc = time.charge(acc, periodMs)` → 조건이 맞고 `time.charged(acc, periodMs)`면 발동 후 `acc = time.spend(acc, periodMs)` | 누적값. 처음 0, 넘친 시간 이월(한 틱 미만)    |
+| 외부 API 경계     | `time.ceilTicks(ms)`                                                                                                             | 틱 개수(올림)                                 |
+| 표시·보간         | `time.stepMs`, `time.remainingMs(r)`, `time.elapsedMs(r, totalMs)`, `time.tickToMs(tick)`                                        | 소수 가능                                     |
 
 - **단위**: 누적값의 단위는 ms × tickRate입니다. 한 틱은 이 단위로 늘 1000이라 1000/tickRate가 정수가 아니어도(30Hz면 33.3ms) 정수로만 셉니다. 저장한 누적값은 같은 tickRate에서만 뜻이 같습니다.
 - **주기 `every`**: 이번 틱에 주기가 n번 들어가면 `fn(arg)`를 n번 부르고, 0으로 지우지 않고 나머지를 남깁니다. 20Hz에서 66ms는 실행 틱이 2, 3, 4, 6…으로 흩어지고 평균은 66ms입니다. 기본이 "들어간 만큼"인 이유는 이름(66ms마다)이 약속하는 평균 횟수를 지키는 쪽이 이것뿐이라서입니다. 최신 상태만 필요한 갱신은 `everyOnce`로 명시합니다(누적값은 같고 콜백 횟수만 다름). 콜백 없이 횟수만 필요하면(발사 n발) `fires`를 같은 틱의 `every`보다 먼저 부릅니다.
 - **지속 `start`·`advance`·`done`**: "남은 시간"으로 셉니다. 0이 "끝남·시작 안 함·다시 쓸 수 있음"을 한 값으로 나타내 활성 플래그가 따로 필요 없고, 길이는 시작하는 자리에만 적습니다. 값이 틱 간격으로 나누어떨어지지 않아도 그 시간을 지난 첫 틱에 끝납니다. 넘친 부분은 버리므로 끝나자마자 다시 시작하는 반복에는 `every`를 씁니다.
+- **조건부 쿨다운 `charge`·`charged`·`spend`**: 사거리 안일 때만 공격하는 것처럼 "주기가 됐어도 조건이 맞아야 발동"하는 쿨다운에 씁니다. `advance`는 넘친 시간을 버려서 틱 경계마다 쿨다운이 올림됩니다(10Hz에서 650ms가 늘 700ms, 약 7% 적은 발동). `every`는 조건 없이 매번 발동해서 쓸 수 없습니다. `charge`는 매 틱 한 틱을 채우고(처음 0), `charged`이고 조건이 맞으면 발동한 뒤 `spend`가 주기만큼 빼며 넘친 시간을 다음 쿨다운으로 이월합니다. 650ms는 10Hz에서 7틱, 6틱, 7틱…으로 흩어지고 평균이 650ms입니다. 조건이 안 맞아 오래 기다려도 이월은 한 틱 미만(`periodMs × tickRate + 999`까지)에서 멈춰서 몰아서 쓰는 일이 없습니다. 누적값은 정수이므로 상태 해시에 넣습니다. `spend`는 `charged`가 아니면 `RangeError`입니다.
 - **콜백**: `fn(arg)` 형태라 매 틱 클로저를 만들지 않고 모듈 수준 함수와 대상 객체를 넘깁니다. 콜백은 인자를 빼면 진행만 합니다.
 - **오류**: tickRate·ms는 정수여야 합니다(주기는 양수, `start`·`ceilTicks`는 0 이상). ms × tickRate가 안전 정수를 넘거나 누적값이 음수·소수면 `RangeError`입니다.
 - **경계 올림 `ceilTicks`**: 롤백 창·입력 지연처럼 틱 개수를 요구하는 외부 API에 넘기는 곳에서 한 번만 씁니다. 창이 의도보다 짧아지면 안 되므로 반올림이 아니라 올림입니다. 0번 틱(시각 0)부터 세면 ms 시각을 지난 첫 틱 번호와 같습니다.

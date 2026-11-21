@@ -158,6 +158,12 @@ export interface TickTime {
     everyOnce<T>(acc: number, periodMs: number, fn?: (arg: T) => void, arg?: T): number;
     /** 이번 틱에 주기가 들어가는 횟수. 같은 틱의 every(acc, periodMs)보다 먼저 부른다. */
     fires(acc: number, periodMs: number): number;
+    /** 조건부 쿨다운(게이지)을 한 틱 채운다. 이월은 한 틱 미만으로 제한된다. 처음 값은 0. */
+    charge(acc: number, periodMs: number): number;
+    /** charge한 값이 한 주기 이상인지(쓸 수 있는지). */
+    charged(acc: number, periodMs: number): boolean;
+    /** 한 주기를 쓰고 넘친 시간을 이월한 값을 돌려준다. charged가 아니면 RangeError. */
+    spend(acc: number, periodMs: number): number;
     /** 지속·지연·쿨다운의 "남은 시간" 값을 만든다. 0ms는 끝난 값 0. */
     start(ms: number): number;
     /** 남은 시간을 한 틱 줄인다(0에서 멈춤). 이번 틱에 0이 되면 fn(arg)를 한 번 부른다. */
