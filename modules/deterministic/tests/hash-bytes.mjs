@@ -73,6 +73,45 @@ assert.equal(T20.remainingMs(T20.start(250)), 250);
 assert.equal(T20.elapsedMs(T20.advance(T20.start(250)), 250), 50);
 assert.equal(tickTime({ tickRate: 60 }).ceilTicks(400), 24);
 assert.equal(T20.ceilTicks(0), 0);
+// 조건부 쿨다운(charge·charged·spend): 10Hz에서 650ms는 발동 틱 간격이 7, 6, 7, 6…으로 흩어지고 평균이 650ms입니다.
+// advance만 쓰면 매번 7틱(700ms)이라 130틱에 18번만 발동합니다.
+{
+    const T10 = tickTime({ tickRate: 10 });
+    let acc = 0;
+    const FIRED = [];
+    for (let tick = 1; tick <= 130; tick++) {
+        acc = T10.charge(acc, 650);
+        if (T10.charged(acc, 650)) {
+            FIRED.push(tick);
+            acc = T10.spend(acc, 650);
+        }
+    }
+    assert.deepEqual(FIRED.slice(0, 6), [7, 13, 20, 26, 33, 39]);
+    assert.equal(FIRED.length, 20);
+    let remaining = T10.start(650);
+    let advanceOnly = 0;
+    for (let tick = 1; tick <= 130; tick++) {
+        remaining = T10.advance(remaining);
+        if (T10.done(remaining)) {
+            advanceOnly++;
+            remaining = T10.start(650);
+        }
+    }
+    assert.equal(advanceOnly, 18);
+    // 조건이 안 맞아 오래 기다려도 이월은 한 틱 미만이라 몰아서 쓰지 못합니다.
+    let idle = 0;
+    for (let tick = 0; tick < 100; tick++) {
+        idle = T10.charge(idle, 650);
+    }
+    assert.equal(idle, 6500 + 999);
+    assert.equal(T10.spend(idle, 650), 999);
+    assert.equal(T10.charged(T10.spend(idle, 650), 650), false);
+    assert.equal(T10.charged(0, 650), false);
+    assert.throws(() => T10.spend(6499, 650), RangeError);
+    assert.throws(() => T10.charge(-1, 650), RangeError);
+    assert.throws(() => T10.charge(0, 0), RangeError);
+    assert.throws(() => T10.charged(0.5, 650), RangeError);
+}
 // 잘못된 인자
 for (const BAD of [0, -1, 1.5, NaN, '20', undefined]) {
     assert.throws(() => tickTime({ tickRate: BAD }), RangeError);
