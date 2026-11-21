@@ -1,3 +1,11 @@
+## v0.65.1 (2026-11-22)
+
+호환되는 기능 추가(PATCH). deterministic `tickTime`에 조건부 쿨다운 `charge`·`charged`·`spend`를 더했습니다. 새 게임(bloom-critters)이 10Hz에서 650 ms 공격 쿨다운이 틱 경계마다 올림되어 늘 700 ms가 되고 공격이 약 7% 줄어드는 것을 확인했습니다. `advance`는 넘친 부분을 버리고, `every`는 조건 없이 매번 발동해서 "사거리 안일 때만 공격"하는 쿨다운을 표현할 수 없었습니다([AI-009](https://github.com/byh-playground/bloom-reference/blob/main/rules/ai-development.md#shared-modules)).
+
+- `acc = time.charge(acc, periodMs)`를 매 틱 부르고, 조건이 맞고 `time.charged(acc, periodMs)`면 발동한 뒤 `acc = time.spend(acc, periodMs)`로 넘친 시간을 이월합니다. 650 ms는 10Hz에서 7·6·7·6틱 간격으로 흩어지고 평균이 650 ms입니다(130틱에 20회, `advance`만 쓰면 18회).
+- 이월은 한 틱 미만(`periodMs × tickRate + 999`)으로 제한해 조건이 안 맞아 오래 기다린 뒤 몰아서 쓰지 못합니다. 누적값은 정수라 상태 해시에 넣습니다. `spend`는 `charged`가 아니면 `RangeError`입니다.
+- 기존 API·동작은 그대로입니다. 시험: core `modules/deterministic/tests/hash-bytes.mjs`에 고정 사례를 더했습니다.
+
 ## v0.65.0 (2026-11-18)
 
 호환되지 않는 변경(MINOR). simloop에 프레임 제한을 넣고, 보간(interpolation)이 표시 시계를 소유합니다. 발배구가 60 Hz 제한과 표시 시계를 게임 코드로 직접 짰다가 화면이 끊겼습니다(콜백 시각으로 판정해 rAF 600번 중 430번만 그림, 콜백 시각으로 보간해 표시 시각 증가가 8~28 ms로 흔들림). 같은 모듈을 쓰는 게임마다 답이 달랐으므로 모듈이 맡습니다. 게임 미배포라 호환 래퍼 없이 바꿉니다.
