@@ -1724,6 +1724,23 @@ function tickTime({ tickRate } = {}) {
     everyOnce: (acc, periodMs, fn, arg) => EVERY(acc, periodMs, fn, arg, true),
     /** 이번 틱에 주기가 몇 번 들어가는지. 같은 틱의 `every(acc, periodMs)`보다 먼저 부릅니다. */
     fires: (acc, periodMs) => Math.floor((counter(acc, "accumulator") + STEP) / PERIOD(periodMs)),
+    /**
+     * 조건이 맞을 때만 쓰는 쿨다운(게이지)을 한 틱 채웁니다. `charged`면 쓸 수 있고, 쓰면 `spend`가 주기만큼 빼며
+     * **넘친 시간은 다음 쿨다운으로 이월**합니다. 틱 경계 때문에 쿨다운이 늘 올림되는 것(650ms가 700ms가 되는 것)을 막아
+     * 평균 주기가 periodMs로 유지됩니다. 오래 기다려도 쌓이는 이월은 한 틱 미만으로 제한됩니다(몰아서 쓰는 일이 없음).
+     * 처음 값은 0이고, 0에서 시작하면 periodMs가 지난 첫 틱에 `charged`가 됩니다.
+     */
+    charge: (acc, periodMs) => Math.min(counter(acc, "accumulator") + STEP, PERIOD(periodMs) + STEP - 1),
+    /** `charge`한 값이 한 주기 이상인지(쓸 수 있는지). */
+    charged: (acc, periodMs) => counter(acc, "accumulator") >= PERIOD(periodMs),
+    /** 한 주기를 쓰고 남은 값(이월)을 돌려줍니다. 아직 `charged`가 아니면 RangeError입니다. */
+    spend: (acc, periodMs) => {
+      const LIMIT = PERIOD(periodMs);
+      if (counter(acc, "accumulator") < LIMIT) {
+        throw new RangeError("accumulator is not charged");
+      }
+      return acc - LIMIT;
+    },
     /** 지속·지연·쿨다운을 시작한 "남은 시간" 값. 0ms는 이미 끝난 값(0)입니다. */
     start: (ms) => UNITS(nonNegativeMs(ms, "ms"), "ms"),
     /**
