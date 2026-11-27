@@ -44,11 +44,12 @@
 
 ### 온라인
 
-| 하려는 일                                            | 모듈                                                                                  | 바로 보기                                                   | 쓰는 게임                                                             |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
-| 온라인 대전(입력 예측·롤백·복구)을 한다              | [rollback](./modules/rollback/README.md) `createSession`·`createRoomSession`          | [rollback-reference][p-rb-ref] · [availability][p-rb-avail] | rally-frontier, bloom-takraw, meow-tumble, bloom-digmori              |
-| 방을 만들고 참가해 P2P로 연결한다                    | [transport](./modules/transport/README.md) `createNostrRoom`·`createNostrDynamicRoom` |                                                             | rally-frontier, bloom-takraw, meow-tumble, yarn-mayhem, bloom-digmori |
-| 온라인 입력을 로컬에서 먼저 보여 준다(예측 미리보기) | [simloop](./modules/simloop/README.md) `LocalInputPreview`                            | [simloop-input-preview][p-simloop]                          |                                                                       |
+| 하려는 일                                             | 모듈                                                                                            | 바로 보기                                                   | 쓰는 게임                                                             |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| 온라인 대전(입력 예측·롤백·복구)을 한다               | [rollback](./modules/rollback/README.md) `createSession`·`createRoomSession`                    | [rollback-reference][p-rb-ref] · [availability][p-rb-avail] | rally-frontier, bloom-takraw, meow-tumble, bloom-digmori              |
+| 방을 만들고 참가해 P2P로 연결한다                     | [transport](./modules/transport/README.md) `createNostrRoom`·`createNostrDynamicRoom`           |                                                             | rally-frontier, bloom-takraw, meow-tumble, yarn-mayhem, bloom-digmori |
+| 서버에서 채널 하나의 입력·적용 ACK·월드 틱을 관리한다 | [authoritative-session](./modules/authoritative-session/README.md) `createAuthoritativeSession` |                                                             | bloom-pickaxe                                                         |
+| 온라인 입력을 로컬에서 먼저 보여 준다(예측 미리보기)  | [simloop](./modules/simloop/README.md) `LocalInputPreview`                                      | [simloop-input-preview][p-simloop]                          |                                                                       |
 
 ### 입력·표현
 

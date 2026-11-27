@@ -17,6 +17,7 @@ export const MODULES = Object.freeze([
     'pathfield',
     'vision',
     'transport',
+    'authoritative-session',
     'replay',
     'rollback',
     'camera',
