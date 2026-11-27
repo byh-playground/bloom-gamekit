@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createAuthoritativeSession } from '../../../dist/authoritative-session.js';
+import { createAuthoritativeSession } from '../../../dist/game-server.js';
 
 const PLAYERS = new Map();
 let disposed = 0;
