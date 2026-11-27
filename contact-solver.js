@@ -1871,7 +1871,20 @@ var ContactSolver = class {
         continue;
       }
       const X = B.x[i] / FP, Y = B.y[i] / FP;
-      this.#surface.solve(X, Y, X, Y, B.radius[i], null, "project", B.key[i], RESULT);
+      const RADIUS = B.radius[i];
+      this.#surface.solve(X, Y, X, Y, RADIUS, null, "project", B.key[i], RESULT);
+      if (RESULT.valid && (RESULT.x !== X || RESULT.y !== Y)) {
+        RESULT.x = this.#surface.round(RESULT.x);
+        RESULT.y = this.#surface.round(RESULT.y);
+        RESULT.valid = this.#surface.clear(RESULT.x, RESULT.y, RESULT.x, RESULT.y, RADIUS);
+      }
+      if (!RESULT.valid) {
+        const START_X = this.#startX[i] / FP, START_Y = this.#startY[i] / FP;
+        if (this.#surface.clear(START_X, START_Y, START_X, START_Y, RADIUS)) {
+          this.#surface.advance(START_X, START_Y, X, Y, RADIUS, null, false, RESULT);
+          B.vx[i] = B.vy[i] = B.ivx[i] = B.ivy[i] = B.rx[i] = B.ry[i] = 0;
+        }
+      }
       B.x[i] = Math.round(RESULT.x * FP);
       B.y[i] = Math.round(RESULT.y * FP);
     }
@@ -2192,7 +2205,7 @@ var ContactSolver = class {
     for (let q = 0; q < length; q++) {
       const C = this.#order[q], I = this.#cI[C], J = this.#cJ[C];
       this.#involved[I] = STAMP;
-      this.#advance(I);
+      this.#advance(I, J < 0);
       if (J >= 0) {
         this.#involved[J] = STAMP;
         this.#advance(J);
@@ -2223,7 +2236,7 @@ var ContactSolver = class {
   }
   // 몸 i를 자기 시간 기준점에서 지금 시각(`#now`)까지 직선으로 옮깁니다. 격자 정수 위치 + 잔여 변위(동적 몸은 정수, 조향
   // 몸은 소수). 시각을 인자로 넘기지 않는 것은 인라인되지 않은 호출의 부동소수 인자가 틱마다 상자(HeapNumber)를 만들기 때문입니다.
-  #advance(i) {
+  #advance(i, surfaceContact = false) {
     const B = this.#bodies, TIME = this.#now, ELAPSED = TIME - this.#base[i];
     this.#base[i] = TIME;
     if (!(ELAPSED > 0) || !(B.flags[i] & ACTIVE)) {
@@ -2237,8 +2250,18 @@ var ContactSolver = class {
       this.#fracX[i] = DX - SX;
       this.#fracY[i] = DY - SY;
     }
-    B.x[i] += SX;
-    B.y[i] += SY;
+    if (surfaceContact && (SX || SY)) {
+      const X = B.x[i] / FP, Y = B.y[i] / FP, TX = (B.x[i] + SX) / FP, TY = (B.y[i] + SY) / FP, RESULT = this.#motion;
+      this.#surface.advance(X, Y, TX, TY, B.radius[i], null, false, RESULT);
+      B.x[i] = Math.round(RESULT.x * FP);
+      B.y[i] = Math.round(RESULT.y * FP);
+      if (RESULT.x !== TX || RESULT.y !== TY) {
+        B.rx[i] = B.ry[i] = this.#fracX[i] = this.#fracY[i] = 0;
+      }
+    } else {
+      B.x[i] += SX;
+      B.y[i] += SY;
+    }
   }
   // 높이로 갈린 쌍인지(한쪽이 VERTICAL일 때만): 한쪽 바닥이 다른 쪽 바닥 + 그쪽 지름 이상.
   #separated(a, b) {
@@ -2275,7 +2298,7 @@ var ContactSolver = class {
     if (SPEED > this.#speedBound) {
       this.#speedBound = SPEED;
     }
-    const DX = VX[i] * SPAN, DY = VY[i] * SPAN, X = B.x[i] / FP, Y = B.y[i] / FP, HIT = this.#hit;
+    const DX = VX[i] * SPAN, DY = VY[i] * SPAN, DYNAMIC_BODY = (FLAGS & DYNAMIC) !== 0, X = (B.x[i] + (DYNAMIC_BODY ? B.rx[i] / this.#remainderScale : this.#fracX[i])) / FP, Y = (B.y[i] + (DYNAMIC_BODY ? B.ry[i] / this.#remainderScale : this.#fracY[i])) / FP, HIT = this.#hit;
     if (Math.abs(DX) + Math.abs(DY) > SAME_TIME && this.#surface.cast(X, Y, DX, DY, B.radius[i], null, HIT) && VX[i] * HIT.nx + VY[i] * HIT.ny < INWARD) {
       this.#keep(i, i, -1, HIT);
     }

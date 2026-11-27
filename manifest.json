@@ -63,7 +63,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "1aed3882de109175edb9d12d59f64a55066a9e74b20d5454f2aa58d3b51a0c4c"
+      "sha256": "fce3064b6b322d0d46a18d5659827e769e5c1a9bb918d3c4515656743cefffa6"
     },
     {
       "file": "camera.js",
@@ -103,7 +103,7 @@
     },
     {
       "file": "contact-solver.js",
-      "sha256": "56c52a07fcbb058b6cfefb3b81a456244331c5c0f8a48c214f47bb5000a29b7a"
+      "sha256": "33ded82f094647c2fb3fbaf30fea0138c034e3cde9d46bf12b91a4e5b5648bf0"
     },
     {
       "file": "pixel-physics.js",
