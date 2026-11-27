@@ -1,4 +1,4 @@
-// modules/authoritative-session/index.js
+// modules/game-server/index.js
 function createAuthoritativeSession({
   world,
   createInput,

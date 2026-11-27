@@ -54,8 +54,8 @@
       "sha256": "883db0ae044214a9cee89adefb454d83afde004a29a3360557950856252c3868"
     },
     {
-      "file": "authoritative-session.js",
-      "sha256": "4bc61a3f4f335448a98ed76e54a125b596743ac41f1a0411a16647f46abe6979"
+      "file": "game-server.js",
+      "sha256": "c8835185776af2b52419f4eea8e773c920a57c5e3c3050386033250c2ba3302b"
     },
     {
       "file": "replay.js",
@@ -63,7 +63,7 @@
     },
     {
       "file": "rollback.js",
-      "sha256": "4b96d1dab9984bebb6321f7a92b8c49f0dc66f7d4c318cc98029c8cecf286058"
+      "sha256": "1aed3882de109175edb9d12d59f64a55066a9e74b20d5454f2aa58d3b51a0c4c"
     },
     {
       "file": "camera.js",
