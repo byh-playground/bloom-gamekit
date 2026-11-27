@@ -41,6 +41,7 @@ const SUITES = {
     execution: ['modules/scenario/tests/browser.mjs'],
     audio: ['modules/audio/scripts/check.mjs'],
     network: [
+        'modules/authoritative-session/tests/session.e2e.mjs',
         'modules/rollback/scripts/rollback-browser.mjs',
         'modules/transport/scripts/dynamic-room-browser.mjs',
         'modules/transport/scripts/room-browser.mjs',

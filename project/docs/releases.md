@@ -1,3 +1,10 @@
+## v0.65.2 (2026-11-27)
+
+호환되는 기능 추가(PATCH). [authoritative-session](../../modules/authoritative-session/README.md)의 `createAuthoritativeSession`을 추가했습니다. 곡갱이.io의 Node 서버와 Cloudflare Worker가 중복 관리하던 채널별 참가자 입력과 적용 ACK를 공유합니다. 채널 배정, 타이머, 게임 패킷, 스냅샷 송신은 각 어댑터의 계약을 따릅니다.
+
+- 오래되거나 중복된 입력 순번을 거절하고 수락 시각을 기록합니다. 입력이 만료되면 월드 틱 전에 초기화하고, 틱이 끝난 뒤 적용 ACK를 전진시키고 입력 에지를 한 번 소비합니다. 입력 상태와 합치기·소비 정책은 게임이 공급합니다.
+- 기존 모듈과 API는 그대로입니다. 배포 manifest에 `authoritative-session.js`가 추가되며, network 고정 시나리오에서 공유 월드, 순번, ACK, 에지 소비, 만료, 재접속 및 종료를 확인합니다.
+
 ## v0.65.1 (2026-11-22)
 
 호환되는 기능 추가(PATCH). deterministic `tickTime`에 조건부 쿨다운 `charge`·`charged`·`spend`를 더했습니다. 새 게임(bloom-critters)이 10Hz에서 650 ms 공격 쿨다운이 틱 경계마다 올림되어 늘 700 ms가 되고 공격이 약 7% 줄어드는 것을 확인했습니다. `advance`는 넘친 부분을 버리고, `every`는 조건 없이 매번 발동해서 "사거리 안일 때만 공격"하는 쿨다운을 표현할 수 없었습니다([AI-009](https://github.com/byh-playground/bloom-reference/blob/main/rules/ai-development.md#shared-modules)).
