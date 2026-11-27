@@ -1,6 +1,10 @@
+## v0.66.0 (2026-11-27)
+
+비호환 배포 경로 변경(MINOR). 권위 서버 세션 모듈을 [game-server](../../modules/game-server/README.md)로 옮겼습니다. 새 배포 파일은 `game-server.js`입니다. `createAuthoritativeSession`의 API와 동작은 그대로이며, 새 버전으로 올리는 게임은 모듈 import와 배포 파일명을 바꿔야 합니다.
+
 ## v0.65.2 (2026-11-27)
 
-호환되는 기능 추가(PATCH). [authoritative-session](../../modules/authoritative-session/README.md)의 `createAuthoritativeSession`을 추가했습니다. 곡갱이.io의 Node 서버와 Cloudflare Worker가 중복 관리하던 채널별 참가자 입력과 적용 ACK를 공유합니다. 채널 배정, 타이머, 게임 패킷, 스냅샷 송신은 각 어댑터의 계약을 따릅니다.
+호환되는 기능 추가(PATCH). [authoritative-session.js](https://github.com/byh-playground/bloom-gamekit/blob/v0.65.2/authoritative-session.js)의 `createAuthoritativeSession`을 추가했습니다. 곡갱이.io의 Node 서버와 Cloudflare Worker가 중복 관리하던 채널별 참가자 입력과 적용 ACK를 공유합니다. 채널 배정, 타이머, 게임 패킷, 스냅샷 송신은 각 어댑터의 계약을 따릅니다.
 
 - 오래되거나 중복된 입력 순번을 거절하고 수락 시각을 기록합니다. 입력이 만료되면 월드 틱 전에 초기화하고, 틱이 끝난 뒤 적용 ACK를 전진시키고 입력 에지를 한 번 소비합니다. 입력 상태와 합치기·소비 정책은 게임이 공급합니다.
 - 기존 모듈과 API는 그대로입니다. 배포 manifest에 `authoritative-session.js`가 추가되며, network 고정 시나리오에서 공유 월드, 순번, ACK, 에지 소비, 만료, 재접속 및 종료를 확인합니다.
