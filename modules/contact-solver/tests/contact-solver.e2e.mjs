@@ -311,3 +311,47 @@ const OPEN = new ObstacleField({ width: 1000, height: 600, fixedPoint: FP, polyg
 }
 
 console.log('contact-solver 고정 시나리오 통과');
+
+// A deployment impulse pushes a grain into the acute junction of a cliff and
+// ramp wall. The resolved centre must stay on its starting side; afterwards
+// the grain can walk away along the passage it came from.
+{
+    const FIELD = new ObstacleField({
+        width: 3000,
+        height: 3600,
+        fixedPoint: FP,
+        circles: [],
+        polygons: [
+            [
+                [768.8905996075496, 2028.3358994113244],
+                [618.8905996075496, 2128.335899411324],
+                [621.1094003924504, 2131.664100588676],
+                [771.1094003924504, 2031.6641005886756],
+            ],
+            [
+                [770, 2017.99],
+                [610, 2017.99],
+                [610, 2021.99],
+                [770, 2021.99],
+            ],
+        ].map((vertices) => ({ points: vertices.map(([x, y]) => ({ x, y })) })),
+    });
+    const RADIUS = 10.125;
+    for (const RESTITUTION of [0, 0.2]) {
+        const SOLVER = solverFor(FIELD, { restitution: RESTITUTION });
+        const BODY = SOLVER.begin(1, 0.1);
+        put(BODY, 0, { x: 736.01, y: 2032.12, vx: 120.49, r: RADIUS });
+        BODY.rx[0] = 4935;
+        SOLVER.end();
+        SOLVER.separate();
+        const X = BODY.x[0] / FP;
+        const Y = BODY.y[0] / FP;
+        assert.ok(FIELD.polygonCircleClear(X, Y, RADIUS), 'body stays outside the cliff');
+        assert.ok(X < 745, 'body stays on the original side of the cliff');
+
+        SOLVER.begin(1, DT);
+        put(BODY, 0, { x: X, y: Y, vx: -100, r: RADIUS, dynamic: false });
+        SOLVER.end();
+        assert.ok(BODY.x[0] / FP < X - 4, 'body can leave the corner');
+    }
+}

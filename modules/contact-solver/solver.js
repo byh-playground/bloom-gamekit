@@ -619,7 +619,18 @@ export class ContactSolver {
             }
             const X = B.x[i] / FP,
                 Y = B.y[i] / FP;
-            this.#surface.solve(X, Y, X, Y, B.radius[i], null, 'project', B.key[i], RESULT);
+            const RADIUS = B.radius[i];
+            this.#surface.solve(X, Y, X, Y, RADIUS, null, 'project', B.key[i], RESULT);
+            if (!RESULT.valid) {
+                const START_X = this.#startX[i] / FP,
+                    START_Y = this.#startY[i] / FP;
+                // If the final grid point cannot be resolved, keep the safe part of the
+                // move from the tick's start so it cannot commit inside a cliff.
+                if (this.#surface.clear(START_X, START_Y, START_X, START_Y, RADIUS)) {
+                    this.#surface.advance(START_X, START_Y, X, Y, RADIUS, null, false, RESULT);
+                    B.vx[i] = B.vy[i] = B.ivx[i] = B.ivy[i] = B.rx[i] = B.ry[i] = 0;
+                }
+            }
             B.x[i] = Math.round(RESULT.x * FP);
             B.y[i] = Math.round(RESULT.y * FP);
         }
@@ -1087,8 +1098,10 @@ export class ContactSolver {
         }
         const DX = VX[i] * SPAN,
             DY = VY[i] * SPAN,
-            X = B.x[i] / FP,
-            Y = B.y[i] / FP,
+            DYNAMIC_BODY = (FLAGS & DYNAMIC) !== 0,
+            // The cast starts at the same subpixel position that #advance integrates.
+            X = (B.x[i] + (DYNAMIC_BODY ? B.rx[i] / this.#remainderScale : this.#fracX[i])) / FP,
+            Y = (B.y[i] + (DYNAMIC_BODY ? B.ry[i] / this.#remainderScale : this.#fracY[i])) / FP,
             HIT = this.#hit;
         if (
             Math.abs(DX) + Math.abs(DY) > SAME_TIME &&
