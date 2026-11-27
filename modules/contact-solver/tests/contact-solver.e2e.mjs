@@ -310,31 +310,30 @@ const OPEN = new ObstacleField({ width: 1000, height: 600, fixedPoint: FP, polyg
     assert.deepEqual([B.x[0], B.y[0]], [B.steerX[0], B.steerY[0]], '조향 끝점에 정확히 섬');
 }
 
-console.log('contact-solver 고정 시나리오 통과');
-
 // A deployment impulse pushes a grain into the acute junction of a cliff and
 // ramp wall. The resolved centre must stay on its starting side; afterwards
 // the grain can walk away along the passage it came from.
 {
+    const POLYGONS = [
+        [
+            [768.8905996075496, 2028.3358994113244],
+            [618.8905996075496, 2128.335899411324],
+            [621.1094003924504, 2131.664100588676],
+            [771.1094003924504, 2031.6641005886756],
+        ],
+        [
+            [770, 2017.99],
+            [610, 2017.99],
+            [610, 2021.99],
+            [770, 2021.99],
+        ],
+    ];
     const FIELD = new ObstacleField({
         width: 3000,
         height: 3600,
         fixedPoint: FP,
         circles: [],
-        polygons: [
-            [
-                [768.8905996075496, 2028.3358994113244],
-                [618.8905996075496, 2128.335899411324],
-                [621.1094003924504, 2131.664100588676],
-                [771.1094003924504, 2031.6641005886756],
-            ],
-            [
-                [770, 2017.99],
-                [610, 2017.99],
-                [610, 2021.99],
-                [770, 2021.99],
-            ],
-        ].map((vertices) => ({ points: vertices.map(([x, y]) => ({ x, y })) })),
+        polygons: POLYGONS.map((vertices) => ({ points: vertices.map(([x, y]) => ({ x, y })) })),
     });
     const RADIUS = 10.125;
     for (const RESTITUTION of [0, 0.2]) {
@@ -354,4 +353,42 @@ console.log('contact-solver 고정 시나리오 통과');
         SOLVER.end();
         assert.ok(BODY.x[0] / FP < X - 4, 'body can leave the corner');
     }
+
+    // A faster body can cross the rotated ramp wall within one tick if a
+    // rounded intermediate contact falls outside the sampled sweep.
+    const ANGLE = Math.PI / 6,
+        COS = Math.cos(ANGLE),
+        SIN = Math.sin(ANGLE),
+        ORIGIN_X = 1000,
+        ORIGIN_Y = 1000;
+    const ROTATED = new ObstacleField({
+        width: 3000,
+        height: 3600,
+        fixedPoint: FP,
+        circles: [],
+        polygons: POLYGONS.map((vertices) => ({
+            points: vertices.map(([x, y]) => ({
+                x: ORIGIN_X + (x - 736.01) * COS - (y + 0.006 - 2032.12) * SIN,
+                y: ORIGIN_Y + (x - 736.01) * SIN + (y + 0.006 - 2032.12) * COS,
+            })),
+        })),
+    });
+    const SOLVER = solverFor(ROTATED, { restitution: 0, pairBudget: 0 });
+    const BODY = SOLVER.begin(1, 0.1);
+    put(BODY, 0, {
+        x: ORIGIN_X,
+        y: ORIGIN_Y,
+        vx: 4000 * COS,
+        vy: 4000 * SIN,
+        r: RADIUS,
+    });
+    BODY.rx[0] = 7500;
+    SOLVER.end();
+    const X = BODY.x[0] / FP,
+        Y = BODY.y[0] / FP;
+    assert.ok(ROTATED.polygonCircleClear(X, Y, RADIUS), 'fast body has a clear final point');
+    const LANE_Y = 2032.12 - (X - ORIGIN_X) * SIN + (Y - ORIGIN_Y) * COS;
+    assert.ok(LANE_Y > 2032.1, 'fast body stays on the approach side of the ramp wall');
 }
+
+console.log('contact-solver 고정 시나리오 통과');
